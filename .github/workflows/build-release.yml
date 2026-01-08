@@ -38,7 +38,7 @@ jobs:
         working-directory: jm
 
       - name: Build Tauri app
-        run: pnpm tauri build --release
+        run: pnpm tauri build
         working-directory: jm
 
       - name: Upload desktop bundles
