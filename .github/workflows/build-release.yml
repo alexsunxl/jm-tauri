@@ -38,10 +38,8 @@ jobs:
         working-directory: jm
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0.5.8
-        with:
-          projectPath: jm
-          args: "-- --release"
+        run: pnpm tauri build -- --release
+        working-directory: jm
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
