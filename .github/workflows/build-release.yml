@@ -47,6 +47,13 @@ jobs:
         run: pnpm tauri build
         working-directory: jm
 
+      - name: Upload Windows exe
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: jm/src-tauri/target/release/jm.exe
+
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
         with:
@@ -108,7 +115,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: jm/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          path: jm/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
 
   release:
     name: Publish Release
@@ -121,6 +128,53 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*; do
+            name="$(basename "$dir")"
+            if [ "$name" = "android-apk" ]; then
+              apk="$(find "$dir" -name "app-universal-release.apk" -print -quit)"
+              if [ -n "$apk" ]; then
+                cp "$apk" "release/jm.apk"
+              fi
+              continue
+            fi
+            if [ "$name" = "windows-exe" ]; then
+              exe="$(find "$dir" -name "jm.exe" -print -quit)"
+              if [ -n "$exe" ]; then
+                rm -rf release/jm
+                mkdir -p release/jm
+                cp "$exe" "release/jm/jm.exe"
+                (cd release && zip -r "jm-windows.zip" "jm")
+                rm -rf release/jm
+              fi
+              continue
+            fi
+            if [ "$name" = "bundle-windows-latest" ]; then
+              continue
+            fi
+            if [ "$name" = "bundle-ubuntu-latest" ]; then
+              appimage="$(find "$dir" -name "*.AppImage" -print -quit)"
+              deb="$(find "$dir" -name "*.deb" -print -quit)"
+              if [ -n "$appimage" ]; then
+                cp "$appimage" "release/jm-linux.AppImage"
+              fi
+              if [ -n "$deb" ]; then
+                cp "$deb" "release/jm-linux.deb"
+              fi
+              continue
+            fi
+            if [ "$name" = "bundle-macos-latest" ]; then
+              dmg="$(find "$dir" -name "*.dmg" -print -quit)"
+              if [ -n "$dmg" ]; then
+                cp "$dmg" "release/jm-macos.dmg"
+              fi
+              continue
+            fi
+            zip -r "release/${name}.zip" "$dir"
+          done
 
       - name: Resolve tag
         id: tag
@@ -135,4 +189,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: artifacts/**/*
+          files: release/*.zip
