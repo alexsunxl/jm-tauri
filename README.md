@@ -4,6 +4,7 @@
 - 🛠️ 技术栈：TypeScript、React、Vite、Tailwind CSS、Tauri (Rust)
 - ⚠️ 仅供技术研究，请勿用于其他用途
 - 💬 如有问题欢迎提 ISSUE
+- ✅ 欢迎下载体验：[release v0.1.25](https://github.com/alexsunxl/jm-tauri/releases/tag/v0.1.25)
 
 ## 功能概览 ✨
 - 登录/搜索/详情/阅读
@@ -15,7 +16,7 @@
 - 下载与本地缓存（按平台写入可写目录）
 
 ## 阅读进度（亮点） 📌
-- 自动记录到章节/页级别
+- 自动记录到章节/页
 - 列表内可直接继续阅读
 - 支持本地收藏与历史记录的进度联动
 
