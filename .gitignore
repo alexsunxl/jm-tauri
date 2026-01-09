@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 jm/push.sh
 doc/local/*
+AGENTS.md
+doc/context.md
+doc/decisions.md
+doc/commands.md
