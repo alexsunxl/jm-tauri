@@ -468,7 +468,6 @@ export default function ComicDetailPage(props: {
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 text-sm font-medium text-zinc-900">标签</div>
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-zinc-700">
-                  <span className="text-zinc-600">标签：</span>
                   {tags.length ? (
                     tags.map((t) => (
                       <button
@@ -484,8 +483,8 @@ export default function ComicDetailPage(props: {
                     <span className="text-zinc-500">—</span>
                   )}
                 </div>
+                <div className="mb-3 text-sm font-medium text-zinc-900">作者</div>
                 <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-700">
-                  <span className="text-zinc-600">作者：</span>
                   {authorList.length ? (
                     authorList.map((name) => (
                       <button
