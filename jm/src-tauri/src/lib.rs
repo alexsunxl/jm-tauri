@@ -162,6 +162,16 @@ struct LatestScanEntry {
     scanned_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ComicExtraEntry {
+    id: String,
+    #[serde(default)]
+    page_count: u64,
+    #[serde(default)]
+    updated_at: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportResult {
@@ -533,6 +543,12 @@ fn read_latest_seen_tree() -> Result<sled::Tree, String> {
         .map_err(|e| format!("open read latest seen tree failed: {e}"))
 }
 
+fn read_comic_extra_tree() -> Result<sled::Tree, String> {
+    read_progress_db()?
+        .open_tree("comic_extra")
+        .map_err(|e| format!("open comic extra tree failed: {e}"))
+}
+
 fn export_read_progress_zip(path: &std::path::Path) -> Result<(), String> {
     let data_dir = resolve_data_dir()?;
     let db_dir = data_dir.join("read-progress.sled");
@@ -640,13 +656,6 @@ fn save_config_to_disk(cfg: &AppConfig) -> Result<(), String> {
 
 fn current_socks_proxy() -> Option<String> {
     config_state().lock().ok().and_then(|c| c.socks_proxy.clone())
-}
-
-fn current_session_cookies() -> HashMap<String, String> {
-    config_state()
-        .lock()
-        .map(|c| c.session_cookies.clone())
-        .unwrap_or_default()
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -2928,6 +2937,54 @@ async fn api_chapter(
     Err(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
+#[tauri::command]
+async fn api_comic_page_count(
+    id: String,
+    chapter_id: Option<String>,
+    cookies: HashMap<String, String>,
+) -> Result<u64, String> {
+    let fetch_id = chapter_id.unwrap_or_else(|| id.clone());
+    let chapter = api_chapter(fetch_id, cookies).await?;
+    let page_count = chapter
+        .get("images")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.len() as u64)
+        .unwrap_or(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("system time error: {e}"))?
+        .as_secs() as i64;
+
+    let entry = ComicExtraEntry {
+        id,
+        page_count,
+        updated_at: now,
+    };
+    let tree = read_comic_extra_tree()?;
+    let val =
+        serde_json::to_vec(&entry).map_err(|e| format!("encode comic extra failed: {e}"))?;
+    tree.insert(entry.id.as_bytes(), val)
+        .map_err(|e| format!("write comic extra failed: {e}"))?;
+    let _ = tree.flush();
+
+    Ok(page_count)
+}
+
+#[tauri::command]
+async fn api_comic_extra_get(id: String) -> Result<Option<ComicExtraEntry>, String> {
+    let tree = read_comic_extra_tree()?;
+    let Some(bytes) = tree
+        .get(id.as_bytes())
+        .map_err(|e| format!("read comic extra failed: {e}"))?
+    else {
+        return Ok(None);
+    };
+    let entry: ComicExtraEntry =
+        serde_json::from_slice(&bytes).map_err(|e| format!("decode comic extra failed: {e}"))?;
+    Ok(Some(entry))
+}
+
 fn parse_scramble_id(text: &str) -> Option<i64> {
     let needle = "var scramble_id = ";
     let start = text.find(needle)? + needle.len();
@@ -3865,6 +3922,8 @@ pub fn run() {
             api_local_favorite_toggle,
             api_album,
             api_chapter,
+            api_comic_page_count,
+            api_comic_extra_get,
             api_chapter_scramble_id,
             api_segmentation_nums,
             api_image_descramble,

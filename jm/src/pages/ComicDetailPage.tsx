@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+import { Loader2 } from "lucide-react";
 
 import type { Session } from "../auth/session";
 import { isAuthExpiredError } from "../auth/errors";
@@ -27,6 +28,12 @@ type Album = {
     sort?: string | number;
     name?: string;
   }>;
+};
+
+type ComicExtraEntry = {
+  id: string;
+  pageCount: number;
+  updatedAt: number;
 };
 
 function toId(v: unknown): string {
@@ -64,6 +71,8 @@ export default function ComicDetailPage(props: {
   const [isLocalFav, setIsLocalFav] = useState(false);
   const [coverBroken, setCoverBroken] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(() => getReadProgress(props.aid));
+  const [comicPageCount, setComicPageCount] = useState<number | null>(null);
+  const [comicPageLoading, setComicPageLoading] = useState(false);
   const { showToast } = useToast();
 
   const {
@@ -145,6 +154,11 @@ export default function ComicDetailPage(props: {
           : [];
     return [...normalized].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
   }, [album, props.aid]);
+  const isSingle = Boolean(album) && chapters.length <= 1;
+  const singleChapterId = useMemo(() => {
+    if (!isSingle) return "";
+    return toId(chapters[0]?.id) || rootAid;
+  }, [chapters, isSingle, rootAid]);
   const errorText =
     albumError && !isAuthExpiredError(albumError)
       ? albumError instanceof Error
@@ -179,6 +193,43 @@ export default function ComicDetailPage(props: {
       // ignore
     }
   }, [album?.name, coverUrl, progress?.chapterId, progress?.chapterName, progress?.chapterSort, props.aid]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!isSingle || !rootAid || !singleChapterId) {
+        setComicPageCount(null);
+        setComicPageLoading(false);
+        return;
+      }
+      setComicPageLoading(true);
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const cached = await invoke<ComicExtraEntry | null>("api_comic_extra_get", { id: rootAid });
+        if (cancelled) return;
+        if (cached && typeof cached.pageCount === "number") {
+          setComicPageCount(cached.pageCount);
+          setComicPageLoading(false);
+          return;
+        }
+        const count = await invoke<number>("api_comic_page_count", {
+          id: rootAid,
+          chapter_id: singleChapterId,
+          cookies: props.session.cookies,
+        });
+        if (cancelled) return;
+        setComicPageCount(Number.isFinite(count) ? count : 0);
+      } catch {
+        if (!cancelled) setComicPageCount(null);
+      } finally {
+        if (!cancelled) setComicPageLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSingle, props.session.cookies, rootAid, singleChapterId]);
 
   const jumpToProgress = useCallback(() => {
     if (!progress?.chapterId) return;
@@ -375,6 +426,16 @@ export default function ComicDetailPage(props: {
                 <div className="mb-3 text-sm font-medium text-zinc-900">信息</div>
                 <div className="space-y-1 text-sm text-zinc-700">
                   <div>AID：{toId(album.id) || props.aid}</div>
+                  {isSingle ? (
+                    <div className="flex items-center gap-2">
+                      <span>漫画页数：</span>
+                      {comicPageLoading ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <span>{comicPageCount != null ? comicPageCount : "—"}</span>
+                      )}
+                    </div>
+                  ) : null}
                   <div>点赞：{String(album.likes ?? "—")}</div>
                   <div>浏览：{String(album.total_views ?? "—")}</div>
                   <div>评论：{String(album.comment_total ?? "—")}</div>
