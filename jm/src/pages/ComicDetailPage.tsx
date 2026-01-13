@@ -468,6 +468,23 @@ export default function ComicDetailPage(props: {
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 text-sm font-medium text-zinc-900">标签</div>
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-zinc-700">
+                  <span className="text-zinc-600">标签：</span>
+                  {tags.length ? (
+                    tags.map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => props.onOpenSearch(t)}
+                      >
+                        {t}
+                      </button>
+                    ))
+                  ) : (
+                    <span className="text-zinc-500">—</span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-700">
                   <span className="text-zinc-600">作者：</span>
                   {authorList.length ? (
                     authorList.map((name) => (
@@ -484,22 +501,6 @@ export default function ComicDetailPage(props: {
                     <span className="text-zinc-500">—</span>
                   )}
                 </div>
-                {tags.length ? (
-                  <div className="flex flex-wrap gap-2">
-                    {tags.map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => props.onOpenSearch(t)}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-sm text-zinc-600">—</div>
-                )}
               </div>
             </div>
 
