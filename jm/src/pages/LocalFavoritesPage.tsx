@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import type { Session } from "../auth/session";
 import CoverImage from "../components/CoverImage";
 import ListViewToggle from "../components/ListViewToggle";
 import Loading from "../components/Loading";
+import { useToast } from "../components/Toast";
 import { getImgBase } from "../config/endpoints";
 import { getReadProgress } from "../reading/progress";
 
@@ -47,8 +49,10 @@ export default function LocalFavoritesPage(props: {
   const [items, setItems] = useState<LocalFavoriteItem[]>([]);
   const [followSet, setFollowSet] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
+  const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const { showToast } = useToast();
 
   const load = async () => {
     setError("");
@@ -120,6 +124,8 @@ export default function LocalFavoritesPage(props: {
 
   const openReaderFromAid = async (aid: string, progress: ReturnType<typeof getReadProgress>) => {
     setError("");
+    if (openReaderLoading[aid]) return;
+    setOpenReaderLoading((prev) => ({ ...prev, [aid]: true }));
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const raw = await invoke<any>("api_album", {
@@ -151,6 +157,9 @@ export default function LocalFavoritesPage(props: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
+      showToast({ ok: false, text: `打开阅读失败：${msg}` });
+    } finally {
+      setOpenReaderLoading((prev) => ({ ...prev, [aid]: false }));
     }
   };
 
@@ -254,10 +263,16 @@ export default function LocalFavoritesPage(props: {
                       <div className="mt-auto flex items-center gap-2">
                         <button
                           type="button"
-                          className="h-7 flex-1 rounded-md border border-zinc-200 bg-white text-xs text-zinc-900 hover:bg-zinc-50"
+                          className="h-7 flex-1 rounded-md border border-zinc-200 bg-white text-xs text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
                           onClick={() => openReaderFromAid(it.aid, progress)}
+                          disabled={!!openReaderLoading[it.aid]}
                         >
-                          {progress?.chapterId ? "继续阅读" : "阅读"}
+                          <span className="flex items-center justify-center gap-1">
+                            {openReaderLoading[it.aid] ? (
+                              <Loader2 className="h-4 w-4 animate-spin scale-75" />
+                            ) : null}
+                            {progress?.chapterId ? "继续阅读" : "阅读"}
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -324,10 +339,16 @@ export default function LocalFavoritesPage(props: {
                   <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
                     <button
                       type="button"
-                      className="h-8 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50"
+                      className="h-8 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
                       onClick={() => openReaderFromAid(it.aid, progress)}
+                      disabled={!!openReaderLoading[it.aid]}
                     >
-                      {progress?.chapterId ? "继续阅读" : "阅读"}
+                      <span className="flex items-center justify-center gap-1">
+                        {openReaderLoading[it.aid] ? (
+                          <Loader2 className="h-4 w-4 animate-spin scale-75" />
+                        ) : null}
+                        {progress?.chapterId ? "继续阅读" : "阅读"}
+                      </span>
                     </button>
                     <button
                       type="button"
