@@ -49,6 +49,28 @@ function toText(v: unknown): string {
   return "";
 }
 
+function splitAuthors(raw: string): string[] {
+  return raw
+    .split(/[、,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeAuthorList(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    const out: string[] = [];
+    for (const item of v) {
+      const text = toText(item);
+      if (!text) continue;
+      out.push(...splitAuthors(text));
+    }
+    return out;
+  }
+  if (typeof v === "string") return splitAuthors(v);
+  if (typeof v === "number") return [String(v)];
+  return [];
+}
+
 function albumCoverUrl(aid: string) {
   return `${getImgBase()}/media/albums/${aid}_3x4.jpg`;
 }
@@ -137,6 +159,7 @@ export default function ComicDetailPage(props: {
 
   const title = album?.name ?? `漫画 ${props.aid}`;
   const authorText = useMemo(() => toText(album?.author), [album?.author]);
+  const authorList = useMemo(() => normalizeAuthorList(album?.author), [album?.author]);
   const tags = useMemo(() => (Array.isArray(album?.tags) ? album!.tags! : []), [album]);
   const chapters = useMemo(() => {
     const s = Array.isArray(album?.series) ? album!.series! : [];
@@ -444,6 +467,23 @@ export default function ComicDetailPage(props: {
 
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 text-sm font-medium text-zinc-900">标签</div>
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-zinc-700">
+                  <span className="text-zinc-600">作者：</span>
+                  {authorList.length ? (
+                    authorList.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="rounded-full border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => props.onOpenSearch(name)}
+                      >
+                        {name}
+                      </button>
+                    ))
+                  ) : (
+                    <span className="text-zinc-500">—</span>
+                  )}
+                </div>
                 {tags.length ? (
                   <div className="flex flex-wrap gap-2">
                     {tags.map((t) => (
