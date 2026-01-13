@@ -1862,8 +1862,32 @@ async fn api_get_encrypted(
             .ok_or_else(|| format!("unexpected data type: {}", env.data))?;
         let decrypted = decode_resp_data(encrypted, ts)?;
         JM_API_BASE_INDEX.store(*idx, Ordering::Relaxed);
-        return serde_json::from_str(&decrypted)
-            .map_err(|e| format!("parse decrypted json failed: {e}"));
+        let album: serde_json::Value =
+            serde_json::from_str(&decrypted).map_err(|e| format!("parse decrypted json failed: {e}"))?;
+        if let Some(series) = album.get("series").and_then(|v| v.as_array()) {
+            if let Ok(tree) = read_latest_tree() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if let Some((latest_id, latest_sort)) = parse_series_latest(series) {
+                    let entry = LatestChapterEntry {
+                        aid: id.clone(),
+                        latest_chapter_id: latest_id,
+                        latest_chapter_sort: latest_sort,
+                        updated_at: now,
+                    };
+                    if let Ok(val) = serde_json::to_vec(&entry) {
+                        let _ = tree.insert(id.as_bytes(), val);
+                        let _ = tree.flush();
+                    }
+                } else {
+                    let _ = tree.remove(id.as_bytes());
+                    let _ = tree.flush();
+                }
+            }
+        }
+        return Ok(album);
     }
 
     Err(last_err.unwrap_or_else(|| "request failed".to_string()))
