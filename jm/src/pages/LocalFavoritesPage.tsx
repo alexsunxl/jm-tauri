@@ -267,9 +267,9 @@ export default function LocalFavoritesPage(props: {
                           onClick={() => openReaderFromAid(it.aid, progress)}
                           disabled={!!openReaderLoading[it.aid]}
                         >
-                          <span className="flex items-center justify-center gap-1">
+                          <span className="relative flex items-center justify-center">
                             {openReaderLoading[it.aid] ? (
-                              <Loader2 className="h-4 w-4 animate-spin scale-75" />
+                              <Loader2 className="absolute left-1 h-3 w-3 animate-spin" />
                             ) : null}
                             {progress?.chapterId ? "继续阅读" : "阅读"}
                           </span>
@@ -343,9 +343,9 @@ export default function LocalFavoritesPage(props: {
                       onClick={() => openReaderFromAid(it.aid, progress)}
                       disabled={!!openReaderLoading[it.aid]}
                     >
-                      <span className="flex items-center justify-center gap-1">
+                      <span className="relative flex items-center justify-center">
                         {openReaderLoading[it.aid] ? (
-                          <Loader2 className="h-4 w-4 animate-spin scale-75" />
+                          <Loader2 className="absolute left-1 h-3 w-3 animate-spin" />
                         ) : null}
                         {progress?.chapterId ? "继续阅读" : "阅读"}
                       </span>
