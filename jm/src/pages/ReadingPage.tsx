@@ -1251,7 +1251,7 @@ export default function ReadingPage(props: {
         ) : null}
 
         {props.chapters.length > 1 ? (
-          <div className="sticky bottom-0 z-10 mt-4 rounded-lg border border-zinc-200 bg-white p-3 shadow-sm">
+          <div className="sticky bottom-0 w-full p-2 z-10 mt-4 rounded-lg border border-zinc-200 bg-white/70 shadow-sm backdrop-blur-md">
             {(() => {
               const list = [...props.chapters].sort(
                 (a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0),
