@@ -4,7 +4,7 @@
 - 🛠️ 技术栈：TypeScript、React、Vite、Tailwind CSS、Tauri (Rust)
 - ⚠️ 仅供技术研究，请勿用于其他用途
 - 💬 如有问题欢迎提 ISSUE
-- ✅ 欢迎下载体验：[release v0.1.25](https://github.com/alexsunxl/jm-tauri/releases/tag/v0.1.25)
+- ✅ 欢迎下载体验：[release](https://github.com/alexsunxl/jm-tauri/releases/latest)
 
 ## 功能概览 ✨
 - 登录/搜索/详情/阅读
