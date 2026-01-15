@@ -211,7 +211,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         设置
       </div>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm md:block">
         <div className="mb-3 text-sm font-medium text-zinc-900">账号</div>
         <div className="mb-3 space-y-1 text-sm text-zinc-700">
           <div>用户名：{props.session.user.username}</div>

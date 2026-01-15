@@ -91,7 +91,7 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
               </button>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-3 hidden sm:block">
             <div className="text-sm text-zinc-700">
               当前漫画大小（局部）：{" "}
               <span className="font-medium text-zinc-900">
@@ -131,7 +131,7 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
             </div>
           </div>
 
-          <div className="mt-4">
+          <div className="mt-4 hidden sm:block">
             <div className="text-sm text-zinc-700">
               滚动倍率（全局）：{" "}
               <span className="font-medium text-zinc-900">
