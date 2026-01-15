@@ -1,0 +1,27 @@
+name: Create Release Tag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-tag:
+    name: Create tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate tag
+        id: tag
+        run: |
+          ts="$(date +%Y%m%d-%H%M%S)"
+          echo "tag=jm-${ts}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
