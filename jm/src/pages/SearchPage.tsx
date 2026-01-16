@@ -5,6 +5,8 @@ import { X } from "lucide-react";
 
 import type { Session } from "../auth/session";
 import { isAuthExpiredError } from "../auth/errors";
+import CoverImage from "../components/CoverImage";
+import ListViewToggle from "../components/ListViewToggle";
 import { getImgBase } from "../config/endpoints";
 
 function loadPrefs(): { sort: "mr" | "mv" | "mp" | "tf" } {
@@ -56,6 +58,15 @@ export default function SearchPage(props: {
   const [committedQuery, setCommittedQuery] = useState("");
   const [searchSort, setSearchSort] = useState<"mr" | "mv" | "mp" | "tf">(pref.sort);
   const [searchPage, setSearchPage] = useState(1);
+  const viewKey = "jm_view_search";
+  const [viewMode, setViewMode] = useState<"list" | "card">(() => {
+    try {
+      const v = localStorage.getItem(viewKey);
+      return v === "card" ? "card" : "list";
+    } catch {
+      return "list";
+    }
+  });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<string[]>(() => loadHistory());
   const [historyFilter, setHistoryFilter] = useState("");
@@ -68,6 +79,14 @@ export default function SearchPage(props: {
   useEffect(() => {
     savePrefs({ sort: searchSort });
   }, [searchSort]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(viewKey, viewMode);
+    } catch {
+      // ignore
+    }
+  }, [viewMode, viewKey]);
 
   useEffect(() => {
     const onDown = (ev: MouseEvent) => {
@@ -342,77 +361,130 @@ export default function SearchPage(props: {
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 text-sm font-medium text-zinc-900">结果</div>
-        <div className="flex flex-col gap-2">
-          {list.map((item, idx) => {
-            const aid =
-              typeof item?.id === "string" || typeof item?.id === "number" ? String(item.id) : "";
-            const title =
-              typeof item?.name === "string"
-                ? item.name
-                : typeof item?.title === "string"
-                  ? item.title
-                  : `搜索结果 ${idx + 1}`;
-            const author =
-              typeof item?.author === "string"
-                ? item.author
-                : Array.isArray(item?.author)
-                  ? item.author.join(", ")
-                  : "";
-            const categoryMain =
-              typeof item?.category?.title === "string" ? item.category.title : "";
-            const categorySub =
-              typeof item?.category_sub?.title === "string" ? item.category_sub.title : "";
-            const category =
-              categoryMain && categorySub ? `${categoryMain}/${categorySub}` : categoryMain || categorySub;
-
-            return (
-              <div
-                key={`${aid}-${idx}`}
-                className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="h-16 w-12 flex-none overflow-hidden rounded border border-zinc-200 bg-zinc-50">
-                    {aid ? (
-                      <img
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                        alt={title}
-                        src={`${getImgBase()}/media/albums/${aid}_3x4.jpg`}
-                      />
-                    ) : null}
-                  </div>
-                  <div className="min-w-0">
+        <div className="mb-3 flex items-center justify-between gap-2 text-sm font-medium text-zinc-900">
+          <div>结果</div>
+          <ListViewToggle value={viewMode} onChange={setViewMode} />
+        </div>
+        {viewMode === "card" ? (
+          <div className="mt-3">
+            {!list.length && !searchLoading ? (
+              <div className="rounded-md border border-dashed border-zinc-200 p-3 text-center text-sm text-zinc-500">
+                暂无结果
+              </div>
+            ) : null}
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              {list.map((item, idx) => {
+                const aid =
+                  typeof item?.id === "string" || typeof item?.id === "number" ? String(item.id) : "";
+                const title =
+                  typeof item?.name === "string"
+                    ? item.name
+                    : typeof item?.title === "string"
+                      ? item.title
+                      : `搜索结果 ${idx + 1}`;
+                const author =
+                  typeof item?.author === "string"
+                    ? item.author
+                    : Array.isArray(item?.author)
+                      ? item.author.join(", ")
+                      : "";
+                const cover = aid ? `${getImgBase()}/media/albums/${aid}_3x4.jpg` : "";
+                return (
+                  <div
+                    key={`${aid}-${idx}`}
+                    className="flex flex-col overflow-hidden rounded-md border border-zinc-200 bg-white"
+                  >
                     <button
                       type="button"
-                      className="line-clamp-2 text-left text-sm font-medium text-zinc-900 hover:underline"
+                      className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-100"
                       onClick={() => aid && props.onOpenComic(aid)}
                       disabled={!aid}
                     >
-                      {title}
+                      <CoverImage src={cover} alt={title} className="h-full w-full object-cover" />
                     </button>
-                    <div className="mt-1 text-xs text-zinc-600">
-                      {author ? `作者：${author} · ` : ""}
-                      {category ? `分类：${category} · ` : ""}
-                      AID：{aid || "—"}
+                    <div className="flex flex-1 flex-col gap-1 p-2">
+                      <button
+                        type="button"
+                        className="line-clamp-2 text-left text-sm font-medium text-zinc-900 hover:underline"
+                        onClick={() => aid && props.onOpenComic(aid)}
+                        disabled={!aid}
+                      >
+                        {title}
+                      </button>
+                      <div className="truncate text-xs text-zinc-600">
+                        {author ? `作者：${author}` : "作者：—"}
+                      </div>
+                      <div className="truncate text-xs text-zinc-500">AID：{aid || "—"}</div>
                     </div>
                   </div>
-                </div>
-                <button
-                  type="button"
-                  className="h-8 flex-none rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
-                  onClick={() => aid && props.onOpenComic(aid)}
-                  disabled={!aid}
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {list.map((item, idx) => {
+              const aid =
+                typeof item?.id === "string" || typeof item?.id === "number" ? String(item.id) : "";
+              const title =
+                typeof item?.name === "string"
+                  ? item.name
+                  : typeof item?.title === "string"
+                    ? item.title
+                    : `搜索结果 ${idx + 1}`;
+              const author =
+                typeof item?.author === "string"
+                  ? item.author
+                  : Array.isArray(item?.author)
+                    ? item.author.join(", ")
+                    : "";
+              const categoryMain =
+                typeof item?.category?.title === "string" ? item.category.title : "";
+              const categorySub =
+                typeof item?.category_sub?.title === "string" ? item.category_sub.title : "";
+              const category =
+                categoryMain && categorySub ? `${categoryMain}/${categorySub}` : categoryMain || categorySub;
+              const cover = aid ? `${getImgBase()}/media/albums/${aid}_3x4.jpg` : "";
+
+              return (
+                <div
+                  key={`${aid}-${idx}`}
+                  className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2"
                 >
-                  详情
-                </button>
-              </div>
-            );
-          })}
-          {!list.length && !searchLoading ? (
-            <div className="text-sm text-zinc-600">暂无结果</div>
-          ) : null}
-        </div>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="h-16 w-12 flex-none overflow-hidden rounded bg-zinc-100">
+                      <CoverImage src={cover} alt={title} className="h-full w-full object-cover" />
+                    </div>
+                    <div className="min-w-0">
+                      <button
+                        type="button"
+                        className="line-clamp-2 text-left text-sm font-medium text-zinc-900 hover:underline"
+                        onClick={() => aid && props.onOpenComic(aid)}
+                        disabled={!aid}
+                      >
+                        {title}
+                      </button>
+                      <div className="mt-1 text-xs text-zinc-600">
+                        {author ? `作者：${author} · ` : ""}
+                        {category ? `分类：${category} · ` : ""}
+                        AID：{aid || "—"}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="h-8 flex-none rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+                    onClick={() => aid && props.onOpenComic(aid)}
+                    disabled={!aid}
+                  >
+                    详情
+                  </button>
+                </div>
+              );
+            })}
+            {!list.length && !searchLoading ? <div className="text-sm text-zinc-600">暂无结果</div> : null}
+          </div>
+        )}
       </div>
     </div>
   );
