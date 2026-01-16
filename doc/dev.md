@@ -11,3 +11,12 @@ pnpm dev
 pnpm build
 cargo tauri dev
 ```
+
+## Android APK
+```
+pnpm apk:dev
+```
+需要正式构建时：
+```
+cargo tauri android build
+```

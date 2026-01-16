@@ -20,6 +20,15 @@ OpenJDK 64-Bit Server VM (build 17.0.17+10, mixed mode, sharing)
 cargo tauri android build
 ```
 
+## 开发阶段构建（不改版本文件）
+在 `jm` 目录运行：
+```
+pnpm apk:dev
+```
+说明：
+- 临时注入 `versionName`/`versionCode`，不修改 `tauri.conf.json`。
+- `versionName` 形如 `0.1.24-dev.YYYYMMDDHHmm.g<hash>`，`versionCode` 使用时间戳，确保可覆盖安装。
+
 ## 签名才能安装（已配置自动签名）
 ```
 $ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner sign \

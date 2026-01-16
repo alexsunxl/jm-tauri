@@ -11,15 +11,39 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      version_name: ${{ steps.tag.outputs.version_name }}
+      version_code: ${{ steps.tag.outputs.version_code }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate tag
+      - name: Generate tag and version
         id: tag
         run: |
           ts="$(date +%Y%m%d-%H%M%S)"
+          stamp="$(date +%Y%m%d%H%M%S)"
+          version_code="$(date +%s)"
+          base_version="$(
+            python3 - <<'PY'
+import json
+import re
+with open('jm/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
+    data = json.load(f)
+v = str(data.get('version', '')).strip()
+m = re.match(r'^(\\d+)\\.(\\d+)\\.(\\d+)', v)
+if not m:
+    raise SystemExit(f'invalid version: {v}')
+print('.'.join(m.groups()))
+PY
+          )"
+          short="$(git rev-parse --short HEAD 2>/dev/null || true)"
+          version_name="${base_version}-dev.${stamp}"
+          if [ -n "$short" ]; then
+            version_name="${version_name}.g${short}"
+          fi
           echo "tag=jm-${ts}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${version_name}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
         run: |
@@ -60,8 +84,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libglib2.0-dev
 
+      - name: Write Tauri override config
+        shell: bash
+        run: |
+          cat > tauri.override.json <<EOF
+          {"version":"${{ needs.create-tag.outputs.version_name }}"}
+          EOF
+        working-directory: jm
+
       - name: Build Tauri app
-        run: pnpm tauri build
+        run: pnpm tauri build --config tauri.override.json
         working-directory: jm
 
       - name: Upload Windows exe
@@ -121,8 +153,15 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli --locked
 
+      - name: Write Tauri override config
+        run: |
+          cat > tauri.override.json <<EOF
+          {"version":"${{ needs.create-tag.outputs.version_name }}","bundle":{"android":{"versionCode":${{ needs.create-tag.outputs.version_code }}}}}
+          EOF
+        working-directory: jm
+
       - name: Build APK
-        run: cargo tauri android build
+        run: cargo tauri android build --config tauri.override.json
         working-directory: jm
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
