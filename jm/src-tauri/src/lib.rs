@@ -3009,6 +3009,10 @@ async fn api_comic_extra_get(id: String) -> Result<Option<ComicExtraEntry>, Stri
     Ok(Some(entry))
 }
 
+const SCRAMBLE_220980: i64 = 220_980;
+const SCRAMBLE_268850: i64 = 268_850;
+const SCRAMBLE_421926: i64 = 421_926; // 2023-02-08 changed image split algorithm.
+
 fn parse_scramble_id(text: &str) -> Option<i64> {
     let needle = "var scramble_id = ";
     let start = text.find(needle)? + needle.len();
@@ -3105,7 +3109,7 @@ async fn api_chapter_scramble_id(id: String) -> Result<i64, String> {
             text.chars().take(300).collect::<String>()
         );
         JM_API_BASE_INDEX.store(*idx, Ordering::Relaxed);
-        return Ok(220980);
+        return Ok(SCRAMBLE_220980);
     }
 
     Err(last_err.unwrap_or_else(|| "request failed".to_string()))
@@ -3115,14 +3119,14 @@ fn get_segmentation_num(eps_id: i64, scramble_id: i64, picture_name: &str) -> i6
     if eps_id < scramble_id {
         return 0;
     }
-    if eps_id < 268_850 {
+    if eps_id < SCRAMBLE_268850 {
         return 10;
     }
 
     let digest = md5_hex(&format!("{eps_id}{picture_name}"));
     let last = digest.as_bytes().last().copied().unwrap_or(b'0') as i64; // ord(hex[-1])
 
-    if eps_id > 421_926 {
+    if eps_id > SCRAMBLE_421926 {
         let mut num = last % 8;
         num = num * 2 + 2;
         num
