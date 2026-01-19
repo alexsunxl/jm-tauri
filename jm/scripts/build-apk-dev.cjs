@@ -37,7 +37,7 @@ try {
   // ignore git errors for non-repo usage
 }
 
-const versionName = `${baseVersion}-dev.${stamp}${gitHash ? `.g${gitHash}` : ""}`;
+const versionName = `${baseVersion}-${stamp}${gitHash ? `.g${gitHash}` : ""}`;
 const versionCode = Math.floor(Date.now() / 1000);
 
 console.log(`[build-apk-dev] versionName=${versionName} versionCode=${versionCode}`);

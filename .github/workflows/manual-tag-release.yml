@@ -12,6 +12,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version_name: ${{ steps.tag.outputs.version_name }}
+      dev_version_name: ${{ steps.tag.outputs.dev_version_name }}
       version_code: ${{ steps.tag.outputs.version_code }}
     steps:
       - name: Checkout
@@ -37,12 +38,15 @@ print('.'.join(m.groups()))
 PY
           )"
           short="$(git rev-parse --short HEAD 2>/dev/null || true)"
-          version_name="${base_version}-dev.${stamp}"
+          tag="jm-${ts}"
+          version_name="${base_version}-${tag}"
+          dev_version_name="${base_version}-${stamp}"
           if [ -n "$short" ]; then
-            version_name="${version_name}.g${short}"
+            dev_version_name="${dev_version_name}.g${short}"
           fi
-          echo "tag=jm-${ts}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version_name=${version_name}" >> "$GITHUB_OUTPUT"
+          echo "dev_version_name=${dev_version_name}" >> "$GITHUB_OUTPUT"
           echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
