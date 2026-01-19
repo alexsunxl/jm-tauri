@@ -31,7 +31,7 @@ jobs:
           with open('jm/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
               data = json.load(f)
           v = str(data.get('version', '')).strip()
-          m = re.match(r'^(\\d+)\\.(\\d+)\\.(\\d+)', v)
+          m = re.match(r'^(\d+)\.(\d+)\.(\d+)', v)
           if not m:
               raise SystemExit(f'invalid version: {v}')
           print('.'.join(m.groups()))
