@@ -26,16 +26,16 @@ jobs:
           version_code="$(date +%s)"
           base_version="$(
             python3 - <<'PY'
-import json
-import re
-with open('jm/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
-    data = json.load(f)
-v = str(data.get('version', '')).strip()
-m = re.match(r'^(\\d+)\\.(\\d+)\\.(\\d+)', v)
-if not m:
-    raise SystemExit(f'invalid version: {v}')
-print('.'.join(m.groups()))
-PY
+          import json
+          import re
+          with open('jm/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          v = str(data.get('version', '')).strip()
+          m = re.match(r'^(\\d+)\\.(\\d+)\\.(\\d+)', v)
+          if not m:
+              raise SystemExit(f'invalid version: {v}')
+          print('.'.join(m.groups()))
+          PY
           )"
           short="$(git rev-parse --short HEAD 2>/dev/null || true)"
           tag="jm-${ts}"
