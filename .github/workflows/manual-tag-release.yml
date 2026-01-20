@@ -39,8 +39,8 @@ jobs:
           )"
           short="$(git rev-parse --short HEAD 2>/dev/null || true)"
           tag="jm-${ts}"
-          version_name="${base_version}-${tag}"
-          dev_version_name="${base_version}-${stamp}"
+          version_name="${base_version}+${tag}"
+          dev_version_name="${base_version}+${stamp}"
           if [ -n "$short" ]; then
             dev_version_name="${dev_version_name}.g${short}"
           fi
