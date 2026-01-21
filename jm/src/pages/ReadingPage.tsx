@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { useDrag } from "@use-gesture/react";
 
 import type { Session } from "../auth/session";
 import { getImgBase } from "../config/endpoints";
@@ -9,6 +8,7 @@ import { useToast } from "../components/Toast";
 import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import ReadingPageMenu from "./ReadingPageMenu";
+import ReadingPullContainer from "./ReadingPullContainer";
 import {
   DEFAULT_READ_IMG_SCALE,
   getReadImageScale,
@@ -297,19 +297,7 @@ export default function ReadingPage(props: {
   const savePageTimerRef = useRef<number | null>(null);
   const initialScrollDoneRef = useRef(false);
   const [itemBaseHeights, setItemBaseHeights] = useState<Record<number, number>>({});
-  const [pullDistance, setPullDistance] = useState(0);
-  const [pulling, setPulling] = useState(false);
-  const [pullUpDistance, setPullUpDistance] = useState(0);
-  const [pullingUp, setPullingUp] = useState(false);
   const { showToast } = useToast();
-  const [touchAction, setTouchAction] = useState<"auto" | "pan-y">("pan-y");
-  const [refreshing, setRefreshing] = useState(false);
-  const pullThreshold = 120;
-  const pullUpThreshold = 120;
-  const pullHideTimer = useRef<number | null>(null);
-  const pullUpHideTimer = useRef<number | null>(null);
-  const dragModeRef = useRef<"down" | "up" | null>(null);
-  const lastPullUpDistanceRef = useRef(0);
 
   const images = useMemo(() => {
     const list = Array.isArray(chapter?.images) ? chapter!.images! : [];
@@ -527,19 +515,6 @@ export default function ReadingPage(props: {
     }
     objectUrlsByIndex.current.clear();
     window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
-    setPullDistance(0);
-    setPulling(false);
-    setRefreshing(false);
-    setPullUpDistance(0);
-    setPullingUp(false);
-    if (pullHideTimer.current) {
-      window.clearTimeout(pullHideTimer.current);
-      pullHideTimer.current = null;
-    }
-    if (pullUpHideTimer.current) {
-      window.clearTimeout(pullUpHideTimer.current);
-      pullUpHideTimer.current = null;
-    }
   }, [props.chapterId]);
 
   useEffect(() => {
@@ -661,19 +636,6 @@ export default function ReadingPage(props: {
       if (hideHeaderTimer.current) window.clearTimeout(hideHeaderTimer.current);
     };
   }, []);
-
-  useEffect(() => {
-    if (!pullingUp) {
-      lastPullUpDistanceRef.current = 0;
-      return;
-    }
-    const prev = lastPullUpDistanceRef.current;
-    const delta = pullUpDistance - prev;
-    if (delta > 0) {
-      window.scrollBy({ top: delta, left: 0, behavior: "auto" });
-    }
-    lastPullUpDistanceRef.current = pullUpDistance;
-  }, [pullUpDistance, pullingUp]);
 
   const loadChapter = useCallback(async () => {
     const token = ++chapterLoadToken.current;
@@ -995,27 +957,6 @@ export default function ReadingPage(props: {
     });
   }, []);
 
-  useEffect(() => {
-    let raf = 0;
-    const updateTouchAction = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const atTop = window.scrollY <= 0;
-        const atBottom =
-          window.innerHeight + window.scrollY >= document.body.scrollHeight - 2;
-        setTouchAction(atTop || atBottom ? "auto" : "pan-y");
-      });
-    };
-    updateTouchAction();
-    window.addEventListener("scroll", updateTouchAction, { passive: true });
-    window.addEventListener("resize", updateTouchAction);
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      window.removeEventListener("scroll", updateTouchAction);
-      window.removeEventListener("resize", updateTouchAction);
-    };
-  }, []);
-
   const triggerMenu = useCallback(() => {
     console.log("[read][menu] trigger");
     setHeaderVisible((v) => !v);
@@ -1026,95 +967,19 @@ export default function ReadingPage(props: {
     // }, 2500);
   }, []);
 
-  const bindPull = useDrag(
-    ({ first, last, down, movement: [, my], event }) => {
-      if (refreshing || loading) return;
-      const atTop = window.scrollY <= 0;
-      const atBottom =
-        window.innerHeight + window.scrollY >= document.body.scrollHeight - 2;
-
-      if (first) {
-        dragModeRef.current = null;
-        if (atTop) {
-          dragModeRef.current = "down";
-          setPulling(true);
-          setPullDistance(0);
-        } else if (atBottom && nextChapter) {
-          dragModeRef.current = "up";
-          setPullingUp(true);
-          setPullUpDistance(0);
-        }
-      }
-
-      const mode = dragModeRef.current;
-      if (!mode) return;
-      if (event.cancelable) event.preventDefault();
-
-      if (first) {
-        // handled by mode
-      }
-      if (mode === "down") {
-        const delta = Math.max(0, my);
-        const next = Math.min(160, delta);
-        if (down) setPullDistance(next);
-        if (last) {
-          setPulling(false);
-          const ready = delta >= pullThreshold;
-          if (ready && !refreshing) {
-            setRefreshing(true);
-            setPullDistance(pullThreshold);
-            void (async () => {
-              await loadChapter();
-              setRefreshing(false);
-              if (pullHideTimer.current) window.clearTimeout(pullHideTimer.current);
-              pullHideTimer.current = window.setTimeout(() => {
-                setPullDistance(0);
-                pullHideTimer.current = null;
-              }, 800);
-            })();
-          } else {
-            setPullDistance(0);
-          }
-        }
-      }
-
-      if (mode === "up") {
-        const delta = Math.max(0, -my);
-        const next = Math.min(160, delta);
-        if (down) setPullUpDistance(next);
-        if (last) {
-          setPullingUp(false);
-          const ready = delta >= pullUpThreshold;
-          if (ready && nextChapter) {
-            setPullUpDistance(pullUpThreshold);
-            if (pullUpHideTimer.current) window.clearTimeout(pullUpHideTimer.current);
-            pullUpHideTimer.current = window.setTimeout(() => {
-              setPullUpDistance(0);
-              pullUpHideTimer.current = null;
-            }, 400);
-            props.onOpenChapter(toId(nextChapter.id), formatChapterTitle(nextChapter));
-          } else {
-            setPullUpDistance(0);
-          }
-        }
-      }
-    },
-    {
-      axis: "y",
-      threshold: 8,
-      filterTaps: true,
-      eventOptions: { passive: false },
-    },
-  );
-
   return (
-    <div
-      ref={rootRef}
+    <ReadingPullContainer
+      rootRef={rootRef}
       className="min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6"
-      style={{ touchAction }}
-      {...bindPull()}
-      onClick={(e) => {
-        if (pulling || refreshing || pullDistance > 0 || pullingUp || pullUpDistance > 0) return;
+      loading={loading}
+      onRefresh={loadChapter}
+      canPullUp={Boolean(nextChapter)}
+      onPullUp={() => {
+        if (!nextChapter) return;
+        props.onOpenChapter(toId(nextChapter.id), formatChapterTitle(nextChapter));
+      }}
+      resetKey={props.chapterId}
+      onRootClick={(e) => {
         const target = e.target as HTMLElement | null;
         if (target?.closest("button, a, input, select, textarea")) return;
 
@@ -1127,31 +992,6 @@ export default function ReadingPage(props: {
         triggerMenu();
       }}
     >
-      {(pulling || refreshing || pullDistance > 0) ? (
-        <div
-          className="flex w-full items-center justify-center overflow-hidden"
-          style={{
-            height: `${Math.min(pullDistance, pullThreshold)}px`,
-            transition: pulling ? "none" : "height 1.5s cubic-bezier(0.2, 0.8, 0.2, 1)",
-          }}
-        >
-          <div
-            className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-3 py-1 text-base text-white shadow"
-            style={{ transform: "translateY(25%)" }}
-          >
-            {refreshing ? (
-              <>
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                正在刷新...
-              </>
-            ) : pullDistance >= pullThreshold ? (
-              "松开刷新"
-            ) : (
-              "下拉刷新完成"
-            )}
-          </div>
-        </div>
-      ) : null}
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <ReadingPageMenu
           visible={headerVisible}
@@ -1289,18 +1129,7 @@ export default function ReadingPage(props: {
             })()}
           </div>
         ) : null}
-        {nextChapter && (pullingUp || pullUpDistance > 0) ? (
-          <div
-            className="flex w-full items-center justify-center overflow-hidden bg-emerald-500 text-base text-white shadow"
-            style={{
-              height: `${Math.min(pullUpDistance, pullUpThreshold)}px`,
-              transition: pullingUp ? "none" : "height 1.1s cubic-bezier(0.2, 0.8, 0.2, 1)",
-            }}
-          >
-            {pullUpDistance >= pullUpThreshold ? "松开进入下一话" : "上拉进入下一话"}
-          </div>
-        ) : null}
       </div>
-    </div>
+    </ReadingPullContainer>
   );
 }
