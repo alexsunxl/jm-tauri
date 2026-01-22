@@ -72,6 +72,7 @@ export default function ReadingPullContainer(props: {
     };
   }, []);
 
+
   useEffect(() => {
     if (!pullingUp) {
       lastPullUpDistanceRef.current = 0;
@@ -256,16 +257,13 @@ export default function ReadingPullContainer(props: {
       }}
     >
       {pulling || refreshing || pullDistance > 0 ? (
-        <div
-          className="flex w-full items-center justify-center overflow-hidden"
-          style={{
-            height: `${Math.min(pullDistance, PULL_THRESHOLD) * 1.5}px`,
-            transition: pulling ? "none" : "height 1.5s cubic-bezier(0.2, 0.8, 0.2, 1)",
-          }}
-        >
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center">
           <div
-            className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-3 py-1 text-base text-white shadow"
-            style={{ transform: "translateY(25%)" }}
+            className="inline-flex items-center gap-2 rounded-full bg-emerald-700/80 px-6 py-4 text-base text-white shadow-md backdrop-blur-md"
+            style={{
+              transform: `translateY(${Math.round(Math.min(220, pullDistance * 1.1))}px)`,
+              transition: pulling ? "none" : "transform 1.6s cubic-bezier(0.2, 0.8, 0.2, 1)",
+            }}
           >
             {refreshing ? (
               <>
@@ -284,14 +282,16 @@ export default function ReadingPullContainer(props: {
       {props.children}
 
       {props.canPullUp && (pullingUp || pullUpDistance > 0) ? (
-        <div
-          className="flex w-full items-center justify-center overflow-hidden bg-emerald-500 text-base text-white shadow"
-          style={{
-            height: `${Math.min(pullUpDistance, PULL_UP_THRESHOLD)}px`,
-            transition: pullingUp ? "none" : "height 1.1s cubic-bezier(0.2, 0.8, 0.2, 1)",
-          }}
-        >
-          {pullUpDistance >= PULL_UP_THRESHOLD ? "松开进入下一话" : "上拉进入下一话"}
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[999] flex justify-center">
+          <div
+            className="inline-flex items-center gap-2 rounded-full bg-emerald-700/80 px-6 py-4 text-base text-white shadow-md backdrop-blur-md"
+            style={{
+              transform: `translateY(-${Math.round(Math.min(220, pullUpDistance * 1.1))}px)`,
+              transition: pullingUp ? "none" : "transform 1.6s cubic-bezier(0.2, 0.8, 0.2, 1)",
+            }}
+          >
+            {pullUpDistance >= PULL_UP_THRESHOLD ? "松开进入下一话" : "上拉进入下一话"}
+          </div>
         </div>
       ) : null}
     </div>
