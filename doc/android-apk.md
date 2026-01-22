@@ -27,7 +27,7 @@ pnpm apk:dev
 ```
 说明：
 - 临时注入 `versionName`/`versionCode`，不修改 `tauri.conf.json`。
-- `versionName` 形如 `0.1.24-dev.YYYYMMDDHHmm.g<hash>`，`versionCode` 使用时间戳，确保可覆盖安装。
+- `versionName` 形如 `0.1.25-dev.YYYYMMDDHHmm.g<hash>`，`versionCode` 使用时间戳，确保可覆盖安装。
 
 ## 签名才能安装（已配置自动签名）
 ```

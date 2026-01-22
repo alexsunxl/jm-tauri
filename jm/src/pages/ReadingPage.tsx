@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { RefreshCw } from "lucide-react";
 import type { Session } from "../auth/session";
 import { getImgBase } from "../config/endpoints";
@@ -12,6 +13,7 @@ import { Info } from "lucide-react";
 import {
   DEFAULT_READ_IMG_SCALE,
   getReadImageScale,
+  getReadMaxConcurrency,
   getReadWheelMultiplier,
   MAX_READ_IMG_SCALE,
   MIN_READ_IMG_SCALE,
@@ -19,13 +21,76 @@ import {
   subscribeSettings,
 } from "../settings/userSettings";
 
-
 type LoadInfoStats = {
   done: number;
   inFlight: number;
-  queued: number;
   errors: number;
 };
+
+type ProcessedMap = Record<number, { url?: string; error?: string; retries?: number }>;
+
+type ReadImage = { raw: string; url: string; pictureName: string };
+
+type Ref<T> = { current: T };
+
+type ReadingSchedulerProps = {
+  aid: string;
+  startPage?: number;
+  currentPage: number;
+  images: ReadImage[];
+  segmentNums: number[] | null;
+  processedRef: Ref<ProcessedMap>;
+  setProcessed: Dispatch<SetStateAction<ProcessedMap>>;
+  objectUrlsByIndex: Ref<Map<number, string>>;
+  readKeyRef: Ref<string>;
+  genRef: Ref<number>;
+  leavingRef: Ref<boolean>;
+  maxConcurrencyRef: Ref<number>;
+  requestToken: number;
+  resetToken: number;
+  onInflightChange: (pages: number[], count: number) => void;
+};
+
+const ChapterNavBar = memo(function ChapterNavBar(props: {
+  chapters: ChapterNavItem[];
+  chapterId: string;
+  onOpenChapter: (chapterId: string, chapterTitle: string) => void;
+}) {
+  if (props.chapters.length <= 1) return null;
+  const list = [...props.chapters].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
+  const currentId = props.chapterId;
+  const curIdx = list.findIndex((c) => toId(c.id) === currentId);
+  const prev = curIdx > 0 ? list[curIdx - 1] : null;
+  const next = curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null;
+  return (
+    <div className="sticky bottom-0 z-10 mt-4 w-full rounded-lg border border-zinc-200 bg-white/70 p-2 shadow-sm backdrop-blur-md">
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+          disabled={!prev}
+          onClick={() => {
+            if (!prev) return;
+            props.onOpenChapter(toId(prev.id), formatChapterTitle(prev));
+          }}
+        >
+          上一话{prev ? ` · ${formatChapterTitle(prev)}` : ""}
+        </button>
+        <button
+          type="button"
+          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+          disabled={!next}
+          onClick={() => {
+            if (!next) return;
+            props.onOpenChapter(toId(next.id), formatChapterTitle(next));
+          }}
+        >
+          下一话{next ? ` · ${formatChapterTitle(next)}` : ""}
+        </button>
+      </div>
+    </div>
+  );
+});
 
 const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   imagesLength: number;
@@ -34,10 +99,15 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   scrambleError: string;
   segmentReady: boolean;
   stats: LoadInfoStats | null;
+  inflightPages: number[];
 }) {
   const [open, setOpen] = useState(false);
+  const maxQueuedShow = 6;
+  const inflightDisplay = props.inflightPages.slice(0, maxQueuedShow).map((p) => `p${p}`);
+  const inflightTotal = props.stats?.inFlight ?? props.inflightPages.length;
+  const inflightMore = Math.max(0, inflightTotal - inflightDisplay.length);
   return (
-    <div className="fixed right-4 top-8 z-40 flex items-start gap-2">
+    <div className="fixed right-4 top-10 z-40 flex flex-col items-end">
       <button
         type="button"
         className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1 text-xs text-white shadow-md backdrop-blur"
@@ -48,21 +118,214 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
         <span className="ml-1 opacity-75">{open ? "收起" : "展开"}</span>
       </button>
       {open ? (
-        <div className="max-w-[85vw] rounded-lg border border-zinc-200 bg-white/95 p-3 text-xs text-zinc-700 shadow-lg backdrop-blur">
+        <div className="mt-2 max-w-[85vw] rounded-lg border border-zinc-200 bg-white/95 p-3 text-xs text-zinc-700 shadow-lg backdrop-blur">
           <div>共 {props.imagesLength} 张（图片域名：{props.imgBase}）</div>
           {props.scrambleId != null ? <div>scramble_id：{props.scrambleId}</div> : null}
           {props.scrambleError ? <div>scramble获取失败：{props.scrambleError}</div> : null}
           <div>{props.segmentReady ? "已计算分割参数" : "计算分割参数中…"}</div>
           {props.segmentReady && props.stats ? (
             <div>
-              已完成 {props.stats.done} · 处理中 {props.stats.inFlight} · 队列中{" "}
-              {props.stats.queued} · 错误 {props.stats.errors}
+              已完成 {props.stats.done} · 处理中 {props.stats.inFlight} · 错误{" "}
+              {props.stats.errors}
+            </div>
+          ) : null}
+          {props.segmentReady && props.inflightPages.length ? (
+            <div>
+              处理中：【{inflightDisplay.join(",")}
+              {inflightMore > 0 ? `…+${inflightMore}` : ""}】
             </div>
           ) : null}
         </div>
       ) : null}
     </div>
   );
+});
+
+const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerProps) {
+  const inFlight = useRef<Set<number>>(new Set());
+  const pumpScheduled = useRef<number | null>(null);
+  const pumpFnRef = useRef<(() => void) | null>(null);
+  const imagesRef = useRef<ReadImage[]>(props.images);
+  const segmentNumsRef = useRef<number[] | null>(props.segmentNums);
+
+  useEffect(() => {
+    imagesRef.current = props.images;
+  }, [props.images]);
+
+  useEffect(() => {
+    segmentNumsRef.current = props.segmentNums;
+  }, [props.segmentNums]);
+
+  const emitInflight = useCallback(() => {
+    const segs = segmentNumsRef.current;
+    const total = imagesRef.current.length;
+    const count = inFlight.current.size;
+    if (!segs || total === 0 || count === 0) {
+      props.onInflightChange([], count);
+      return;
+    }
+    const pages: number[] = [];
+    inFlight.current.forEach((idx) => {
+      if (idx < 0 || idx >= total) return;
+      if ((segs[idx] ?? 0) <= 1) return;
+      pages.push(idx + 1);
+    });
+    pages.sort((a, b) => a - b);
+    props.onInflightChange(pages, count);
+  }, [props.onInflightChange]);
+
+  const clearPump = useCallback(() => {
+    if (pumpScheduled.current != null) {
+      window.clearTimeout(pumpScheduled.current);
+      pumpScheduled.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    inFlight.current.clear();
+    clearPump();
+    emitInflight();
+  }, [props.resetToken, clearPump, emitInflight]);
+
+  useEffect(() => {
+    emitInflight();
+  }, [props.segmentNums, props.images.length, emitInflight]);
+
+  useEffect(() => {
+    return () => {
+      clearPump();
+      inFlight.current.clear();
+    };
+  }, [clearPump]);
+
+  const schedulePump = useCallback(() => {
+    if (props.leavingRef.current) return;
+    if (pumpScheduled.current != null) return;
+    pumpScheduled.current = window.setTimeout(() => {
+      pumpScheduled.current = null;
+      pumpFnRef.current?.();
+    }, 0);
+  }, [props.leavingRef]);
+
+  const pump = useCallback(async () => {
+    if (props.leavingRef.current) return;
+    const maxConcurrency = props.maxConcurrencyRef.current;
+
+    const currentSegs = segmentNumsRef.current;
+    const currentImages = imagesRef.current;
+    if (!currentSegs?.length || currentImages.length === 0) return;
+    if (inFlight.current.size >= maxConcurrency) return;
+
+    const total = currentImages.length;
+    let page = props.currentPage;
+    if (page <= 1 && (props.startPage ?? 1) > 1) {
+      page = props.startPage ?? 1;
+    }
+    page = Math.min(total, Math.max(1, page));
+    const cur = page - 1;
+
+    const gen = props.genRef.current;
+    const available = maxConcurrency - inFlight.current.size;
+    const startNow: number[] = [];
+    const consider = (idx: number) => {
+      if (startNow.length >= available) return;
+      if (idx < 0 || idx >= total) return;
+      if ((currentSegs[idx] ?? 0) <= 1) return;
+      const done = props.processedRef.current[idx];
+      if (done?.url || done?.error) return;
+      if (inFlight.current.has(idx)) return;
+      startNow.push(idx);
+    };
+    for (let i = cur; i < total && startNow.length < available; i += 1) {
+      consider(i);
+    }
+    for (let i = cur - 1; i >= 0 && startNow.length < available; i -= 1) {
+      consider(i);
+    }
+    if (!startNow.length) return;
+
+    for (const idx of startNow) {
+      inFlight.current.add(idx);
+      emitInflight();
+      (async () => {
+        try {
+          if (props.leavingRef.current) return;
+          const segs = segmentNumsRef.current;
+          const imgs = imagesRef.current;
+          const img = imgs[idx];
+          if (!img) return;
+          const num = segs?.[idx] ?? 0;
+          const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+          const fileOrUrl = await invoke<string>("api_image_descramble_file", {
+            url: img.url,
+            num,
+            aid: props.aid,
+            readKey: props.readKeyRef.current,
+          });
+          if (props.leavingRef.current) return;
+          if (gen !== props.genRef.current) return;
+          const objectUrl = fileOrUrl.startsWith("http")
+            ? fileOrUrl
+            : convertFileSrc(fileOrUrl, "jmcache");
+          const prevUrl = props.objectUrlsByIndex.current.get(idx);
+          if (prevUrl?.startsWith("blob:")) URL.revokeObjectURL(prevUrl);
+          props.objectUrlsByIndex.current.set(idx, objectUrl);
+          const retries = props.processedRef.current[idx]?.retries;
+          props.processedRef.current = {
+            ...props.processedRef.current,
+            [idx]: { url: objectUrl, retries },
+          };
+          props.setProcessed((prev) => ({ ...prev, [idx]: { url: objectUrl, retries } }));
+        } catch (e) {
+          if (gen !== props.genRef.current) return;
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg === "cancelled") return;
+          const retries = props.processedRef.current[idx]?.retries ?? 0;
+          props.processedRef.current = {
+            ...props.processedRef.current,
+            [idx]: { error: msg, retries },
+          };
+          props.setProcessed((prev) => ({ ...prev, [idx]: { error: msg, retries } }));
+        } finally {
+          inFlight.current.delete(idx);
+          emitInflight();
+          schedulePump();
+        }
+      })();
+    }
+  }, [
+    emitInflight,
+    props.aid,
+    props.currentPage,
+    props.genRef,
+    props.leavingRef,
+    props.maxConcurrencyRef,
+    props.objectUrlsByIndex,
+    props.processedRef,
+    props.readKeyRef,
+    props.setProcessed,
+    props.startPage,
+    schedulePump,
+  ]);
+
+  useEffect(() => {
+    pumpFnRef.current = () => {
+      void pump();
+    };
+  }, [pump]);
+
+  useEffect(() => {
+    schedulePump();
+  }, [
+    schedulePump,
+    props.segmentNums,
+    props.images.length,
+    props.currentPage,
+    props.startPage,
+    props.requestToken,
+  ]);
+
+  return null;
 });
 
 
@@ -299,6 +562,7 @@ export default function ReadingPage(props: {
   const ITEM_GAP = 0;
   const OVERSCAN = 12;
   const wheelMultiplierRef = useRef<number>(getReadWheelMultiplier());
+  const maxConcurrencyRef = useRef<number>(getReadMaxConcurrency());
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
   const [globalScale, setGlobalScale] = useState(() => getReadImageScale());
   const [localScale, setLocalScale] = useState<number | null>(() =>
@@ -313,22 +577,15 @@ export default function ReadingPage(props: {
   const [scrambleId, setScrambleId] = useState<number | null>(null);
   const [scrambleError, setScrambleError] = useState<string>("");
   const [segmentNums, setSegmentNums] = useState<number[] | null>(null);
-  const [wanted, setWanted] = useState<Set<number>>(() => new Set());
-  const [processed, setProcessed] = useState<
-    Record<number, { url?: string; error?: string; retries?: number }>
-  >({});
+  const [processed, setProcessed] = useState<ProcessedMap>({});
   const [directLoaded, setDirectLoaded] = useState<Set<number>>(() => new Set());
   const processedRef = useRef(processed);
-  const wantedRef = useRef(wanted);
-  const imagesRef = useRef<
-    Array<{ raw: string; url: string; pictureName: string }>
-  >([]);
-  const segmentNumsRef = useRef<number[] | null>(null);
   const genRef = useRef(0);
   const objectUrlsByIndex = useRef<Map<number, string>>(new Map());
-  const inFlight = useRef<Set<number>>(new Set());
-  const pumpScheduled = useRef<number | null>(null);
-  const pumpFnRef = useRef<(() => void) | null>(null);
+  const [inflightPages, setInflightPages] = useState<number[]>([]);
+  const [inflightCount, setInflightCount] = useState(0);
+  const [schedulerToken, setSchedulerToken] = useState(0);
+  const [pumpToken, setPumpToken] = useState(0);
   const [headerVisible, setHeaderVisible] = useState(false);
   const hideHeaderTimer = useRef<number | null>(null);
   const chapterLoadToken = useRef(0);
@@ -346,7 +603,7 @@ export default function ReadingPage(props: {
   const [itemBaseHeights, setItemBaseHeights] = useState<Record<number, number>>({});
   const { showToast } = useToast();
 
-  const images = useMemo(() => {
+  const images = useMemo<ReadImage[]>(() => {
     const list = Array.isArray(chapter?.images) ? chapter!.images! : [];
     const sorted = [...list].sort((a, b) => {
       const na = numKey(a);
@@ -398,17 +655,27 @@ export default function ReadingPage(props: {
   }, [chapter?.series_id, props.aid, props.chapters]);
 
   const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
+  const handleInflightChange = useCallback((pages: number[], count: number) => {
+    setInflightCount((prev) => (prev === count ? prev : count));
+    setInflightPages((prev) => {
+      if (prev.length === pages.length && prev.every((v, i) => v === pages[i])) return prev;
+      return pages;
+    });
+  }, []);
+  const inflightSet = useMemo(() => {
+    return new Set(inflightPages.map((p) => p - 1));
+  }, [inflightPages]);
+  const requestPump = useCallback(() => {
+    setPumpToken((v) => v + 1);
+  }, []);
   const loadInfoStats = useMemo<LoadInfoStats | null>(() => {
     if (!segmentNums) return null;
     const processedDone = Object.values(processed).filter((v) => Boolean(v.url)).length;
     const processedErr = Object.values(processed).filter((v) => Boolean(v.error)).length;
     const direct = directLoaded.size;
     const done = processedDone + direct;
-    const inq = inFlight.current.size;
-    const queued =
-      wanted.size - done - processedErr - inq > 0 ? wanted.size - done - processedErr - inq : 0;
-    return { done, inFlight: inq, queued, errors: processedErr };
-  }, [directLoaded, processed, segmentNums, wanted.size]);
+    return { done, inFlight: inflightCount, errors: processedErr };
+  }, [directLoaded, inflightCount, processed, segmentNums]);
 
   useEffect(() => {
     let cancelled = false;
@@ -476,7 +743,8 @@ export default function ReadingPage(props: {
   const handleGoHome = useCallback(() => {
     leavingRef.current = true;
     genRef.current += 1;
-    inFlight.current.clear();
+    setInflightCount(0);
+    setInflightPages([]);
     const key = readKeyRef.current;
     void (async () => {
       try {
@@ -493,7 +761,8 @@ export default function ReadingPage(props: {
   const handleBack = useCallback(() => {
     leavingRef.current = true;
     genRef.current += 1;
-    inFlight.current.clear();
+    setInflightCount(0);
+    setInflightPages([]);
     const key = readKeyRef.current;
     void (async () => {
       try {
@@ -560,14 +829,15 @@ export default function ReadingPage(props: {
     })();
 
     genRef.current += 1;
-    setWanted(new Set());
     setProcessed({});
     setDirectLoaded(new Set());
     setItemBaseHeights({});
     setLocalScale(loadLocalImageScale(props.aid));
+    setInflightCount(0);
+    setInflightPages([]);
+    setSchedulerToken((v) => v + 1);
     lastPageRef.current = null;
     initialScrollDoneRef.current = false;
-    inFlight.current.clear();
     for (const url of objectUrlsByIndex.current.values()) {
       if (url.startsWith("blob:")) URL.revokeObjectURL(url);
     }
@@ -787,60 +1057,8 @@ export default function ReadingPage(props: {
     };
   }, [images, props.chapterId, scrambleId]);
 
-  useEffect(() => {
-    if (!segmentNums?.length || images.length === 0) return;
-    const total = images.length;
-    const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
-    const seed = [curIndex - 1, curIndex, curIndex + 1, curIndex + 2, curIndex + 3];
-    setWanted((prev) => {
-      const next = new Set(prev);
-      for (const idx of seed) {
-        if (idx < 0 || idx >= total) continue;
-        next.add(idx);
-      }
-      return next;
-    });
-  }, [segmentNums, images.length, props.startPage]);
-
-  useEffect(() => {
-    if (!segmentNums?.length || images.length === 0) return;
-    const total = images.length;
-    const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
-    let left = curIndex - 2;
-    let right = curIndex + 4;
-    let tick = 0;
-    const timer = window.setInterval(() => {
-      setWanted((prev) => {
-        if (prev.size >= total) return prev;
-        const next = new Set(prev);
-        while (left >= 0 && next.has(left)) left -= 1;
-        while (right < total && next.has(right)) right += 1;
-        let updated = false;
-        if (right < total) {
-          next.add(right);
-          right += 1;
-          updated = true;
-        }
-        const shouldAddLeft = !updated || tick % 3 === 2;
-        if (shouldAddLeft && left >= 0) {
-          next.add(left);
-          left -= 1;
-          updated = true;
-        }
-        tick += 1;
-        return updated ? next : prev;
-      });
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [images.length, segmentNums, props.startPage]);
-
-  const onVisible = useCallback((index: number) => {
-    setWanted((prev) => {
-      if (prev.has(index)) return prev;
-      const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
+  const onVisible = useCallback((_index: number) => {
+    // no-op: queue is generated on-demand by current page
   }, []);
 
   const onDirectLoaded = useCallback((index: number) => {
@@ -860,121 +1078,21 @@ export default function ReadingPage(props: {
     });
   }, []);
 
-  const onRetry = useCallback((index: number) => {
-    setProcessed((prev) => {
-      const current = prev[index] ?? {};
-      const retries = (current.retries ?? 0) + 1;
-      return { ...prev, [index]: { ...current, error: undefined, retries } };
-    });
-    setWanted((prev) => {
-      const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
-  }, []);
-
   useEffect(() => {
     processedRef.current = processed;
   }, [processed]);
 
-  useEffect(() => {
-    wantedRef.current = wanted;
-  }, [wanted]);
-
-  useEffect(() => {
-    imagesRef.current = images;
-  }, [images]);
-
-  useEffect(() => {
-    segmentNumsRef.current = segmentNums;
-  }, [segmentNums]);
-
-  const schedulePump = useCallback(() => {
-    if (leavingRef.current) return;
-    if (pumpScheduled.current != null) return;
-    pumpScheduled.current = window.setTimeout(() => {
-      pumpScheduled.current = null;
-      pumpFnRef.current?.();
-    }, 0);
-  }, []);
-
-  const pump = useCallback(async () => {
-    if (leavingRef.current) return;
-    const maxConcurrency = 3;
-
-    const currentSegs = segmentNumsRef.current;
-    const currentImages = imagesRef.current;
-    if (!currentSegs?.length || currentImages.length === 0) return;
-    if (inFlight.current.size >= maxConcurrency) return;
-
-    const queue: number[] = [];
-    wantedRef.current.forEach((idx) => {
-      if (idx < 0 || idx >= currentImages.length) return;
-      if ((currentSegs[idx] ?? 0) <= 1) return;
-      const done = processedRef.current[idx];
-      if (done?.url || done?.error) return;
-      if (inFlight.current.has(idx)) return;
-      queue.push(idx);
-    });
-    queue.sort((a, b) => a - b);
-
-    const gen = genRef.current;
-    const available = maxConcurrency - inFlight.current.size;
-    const startNow = queue.slice(0, Math.max(0, available));
-    if (!startNow.length) return;
-
-    for (const idx of startNow) {
-      inFlight.current.add(idx);
-      (async () => {
-        try {
-          if (leavingRef.current) return;
-          const segs = segmentNumsRef.current;
-          const imgs = imagesRef.current;
-          const img = imgs[idx];
-          if (!img) return;
-          const num = segs?.[idx] ?? 0;
-          const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
-          const fileOrUrl = await invoke<string>("api_image_descramble_file", {
-            url: img.url,
-            num,
-            aid: props.aid,
-            readKey: readKeyRef.current,
-          });
-          if (leavingRef.current) return;
-          if (gen !== genRef.current) return;
-          const objectUrl = fileOrUrl.startsWith("http")
-            ? fileOrUrl
-            : convertFileSrc(fileOrUrl, "jmcache");
-          const prevUrl = objectUrlsByIndex.current.get(idx);
-          if (prevUrl?.startsWith("blob:")) URL.revokeObjectURL(prevUrl);
-          objectUrlsByIndex.current.set(idx, objectUrl);
-          const retries = processedRef.current[idx]?.retries;
-          processedRef.current = { ...processedRef.current, [idx]: { url: objectUrl, retries } };
-          setProcessed((prev) => ({ ...prev, [idx]: { url: objectUrl, retries } }));
-        } catch (e) {
-          if (gen !== genRef.current) return;
-          const msg = e instanceof Error ? e.message : String(e);
-          if (msg === "cancelled") return;
-          const retries = processedRef.current[idx]?.retries ?? 0;
-          processedRef.current = { ...processedRef.current, [idx]: { error: msg, retries } };
-          setProcessed((prev) => ({ ...prev, [idx]: { error: msg, retries } }));
-        } finally {
-          inFlight.current.delete(idx);
-          schedulePump();
-        }
-      })();
-    }
-  }, [schedulePump]);
-
-  useEffect(() => {
-    pumpFnRef.current = () => {
-      void pump();
-    };
-  }, [pump]);
-
-  useEffect(() => {
-    schedulePump();
-  }, [schedulePump, wanted, segmentNums, images.length]);
+  const onRetry = useCallback(
+    (index: number) => {
+      setProcessed((prev) => {
+        const current = prev[index] ?? {};
+        const retries = (current.retries ?? 0) + 1;
+        return { ...prev, [index]: { ...current, error: undefined, retries } };
+      });
+      requestPump();
+    },
+    [requestPump],
+  );
 
   useEffect(() => {
     return () => {
@@ -984,11 +1102,6 @@ export default function ReadingPage(props: {
         if (url.startsWith("blob:")) URL.revokeObjectURL(url);
       }
       objectUrlsByIndex.current.clear();
-      inFlight.current.clear();
-      if (pumpScheduled.current != null) {
-        window.clearTimeout(pumpScheduled.current);
-        pumpScheduled.current = null;
-      }
 
       // Best-effort cancel when leaving ReadingPage.
       const key = readKeyRef.current;
@@ -1029,8 +1142,10 @@ export default function ReadingPage(props: {
 
   useEffect(() => {
     wheelMultiplierRef.current = getReadWheelMultiplier();
+    maxConcurrencyRef.current = getReadMaxConcurrency();
     return subscribeSettings(() => {
       wheelMultiplierRef.current = getReadWheelMultiplier();
+      maxConcurrencyRef.current = getReadMaxConcurrency();
       setGlobalScale(getReadImageScale());
       setWheelMultiplier(getReadWheelMultiplier());
     });
@@ -1092,6 +1207,23 @@ export default function ReadingPage(props: {
           wheelMultiplier={wheelMultiplier}
           onWheelMultiplierChange={handleWheelMultiplierChange}
         />
+        <ReadingScheduler
+          aid={props.aid}
+          startPage={props.startPage}
+          currentPage={currentPage}
+          images={images}
+          segmentNums={segmentNums}
+          processedRef={processedRef}
+          setProcessed={setProcessed}
+          objectUrlsByIndex={objectUrlsByIndex}
+          readKeyRef={readKeyRef}
+          genRef={genRef}
+          leavingRef={leavingRef}
+          maxConcurrencyRef={maxConcurrencyRef}
+          requestToken={pumpToken}
+          resetToken={schedulerToken}
+          onInflightChange={handleInflightChange}
+        />
 
         {loading ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
@@ -1113,6 +1245,7 @@ export default function ReadingPage(props: {
             scrambleError={scrambleError}
             segmentReady={Boolean(segmentNums)}
             stats={loadInfoStats}
+            inflightPages={inflightPages}
           />
         ) : null}
 
@@ -1121,11 +1254,18 @@ export default function ReadingPage(props: {
             <div style={{ height: `${heightPrefix[windowRange.start] ?? 0}px` }} />
             {images.slice(windowRange.start, windowRange.end).map((img, offset) => {
               const idx = windowRange.start + offset;
+              const num = segmentNums?.[idx] ?? 0;
+              const done = processed[idx];
+              const isQueued =
+                num > 1 &&
+                !done?.url &&
+                !done?.error &&
+                !inflightSet.has(idx);
               return (
                 <div key={`${idx}-${img.url}`} style={{ paddingBottom: `${ITEM_GAP}px` }}>
                   <ProcessedImage
                     src={img.url}
-                    num={segmentNums?.[idx] ?? 0}
+                    num={num}
                     alt={`p${idx + 1}`}
                     index={idx}
                     height={Math.max(
@@ -1142,7 +1282,7 @@ export default function ReadingPage(props: {
                     processedUrl={processed[idx]?.url}
                     error={processed[idx]?.error}
                     retries={processed[idx]?.retries}
-                    isQueued={wanted.has(idx)}
+                    isQueued={isQueued}
                   />
                 </div>
               );
@@ -1157,45 +1297,11 @@ export default function ReadingPage(props: {
           </div>
         ) : null}
 
-        {props.chapters.length > 1 ? (
-          <div className="sticky bottom-0 w-full p-2 z-10 mt-4 rounded-lg border border-zinc-200 bg-white/70 shadow-sm backdrop-blur-md">
-            {(() => {
-              const list = [...props.chapters].sort(
-                (a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0),
-              );
-              const currentId = props.chapterId;
-              const curIdx = list.findIndex((c) => toId(c.id) === currentId);
-              const prev = curIdx > 0 ? list[curIdx - 1] : null;
-              const next = curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null;
-              return (
-                <div className="flex items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
-                    disabled={!prev}
-                    onClick={() => {
-                      if (!prev) return;
-                      props.onOpenChapter(toId(prev.id), formatChapterTitle(prev));
-                    }}
-                  >
-                    上一话{prev ? ` · ${formatChapterTitle(prev)}` : ""}
-                  </button>
-                  <button
-                    type="button"
-                    className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
-                    disabled={!next}
-                    onClick={() => {
-                      if (!next) return;
-                      props.onOpenChapter(toId(next.id), formatChapterTitle(next));
-                    }}
-                  >
-                    下一话{next ? ` · ${formatChapterTitle(next)}` : ""}
-                  </button>
-                </div>
-              );
-            })()}
-          </div>
-        ) : null}
+        <ChapterNavBar
+          chapters={props.chapters}
+          chapterId={props.chapterId}
+          onOpenChapter={props.onOpenChapter}
+        />
       </div>
     </ReadingPullContainer>
   );

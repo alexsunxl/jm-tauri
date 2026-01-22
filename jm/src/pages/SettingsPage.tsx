@@ -4,12 +4,17 @@ import type { Session } from "../auth/session";
 import {
   DEFAULT_WHEEL_MULTIPLIER,
   DEFAULT_READ_IMG_SCALE,
+  DEFAULT_READ_MAX_CONCURRENCY,
+  getReadMaxConcurrency,
   getReadWheelMultiplier,
   getReadImageScale,
+  MAX_READ_MAX_CONCURRENCY,
   MAX_WHEEL_MULTIPLIER,
   MAX_READ_IMG_SCALE,
+  MIN_READ_MAX_CONCURRENCY,
   MIN_WHEEL_MULTIPLIER,
   MIN_READ_IMG_SCALE,
+  setReadMaxConcurrency,
   setReadWheelMultiplier,
   setReadImageScale,
   subscribeSettings,
@@ -21,6 +26,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   const { showToast } = useToast();
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
   const [imageScale, setImageScale] = useState(() => getReadImageScale());
+  const [readConcurrency, setReadConcurrency] = useState(() => getReadMaxConcurrency());
   const [socksProxy, setSocksProxy] = useState("");
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -56,6 +62,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
     return subscribeSettings(() => {
       setWheelMultiplier(getReadWheelMultiplier());
       setImageScale(getReadImageScale());
+      setReadConcurrency(getReadMaxConcurrency());
     });
   }, []);
 
@@ -353,6 +360,46 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
             }}
           >
             恢复默认（{Math.round(DEFAULT_READ_IMG_SCALE * 100)}%）
+          </button>
+
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 text-sm font-medium text-zinc-900">阅读性能</div>
+        <div className="space-y-3">
+          <div className="text-sm text-zinc-700">
+            图片处理并发数：<span className="font-medium text-zinc-900">{readConcurrency}</span>
+          </div>
+          <input
+            type="range"
+            min={MIN_READ_MAX_CONCURRENCY}
+            max={MAX_READ_MAX_CONCURRENCY}
+            step={1}
+            value={readConcurrency}
+            onChange={(e) => {
+              const v = Number(e.currentTarget.value);
+              setReadConcurrency(v);
+              setReadMaxConcurrency(v);
+            }}
+            className="w-full"
+          />
+          <div className="flex items-center justify-between text-xs text-zinc-500">
+            <div>{MIN_READ_MAX_CONCURRENCY}</div>
+            <div>{MAX_READ_MAX_CONCURRENCY}</div>
+          </div>
+          <div className="text-xs text-zinc-500">
+            数值越高处理更快，但可能更卡。移动端建议 2–3。
+          </div>
+          <button
+            type="button"
+            className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm hover:bg-zinc-50"
+            onClick={() => {
+              setReadConcurrency(DEFAULT_READ_MAX_CONCURRENCY);
+              setReadMaxConcurrency(DEFAULT_READ_MAX_CONCURRENCY);
+            }}
+          >
+            恢复默认（{DEFAULT_READ_MAX_CONCURRENCY}）
           </button>
         </div>
       </div>

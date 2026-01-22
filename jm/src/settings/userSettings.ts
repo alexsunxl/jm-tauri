@@ -1,5 +1,6 @@
 const KEY_WHEEL_MULTIPLIER = "jm_read_wheel_multiplier";
 const KEY_READ_IMG_SCALE = "jm_read_image_scale";
+const KEY_READ_MAX_CONCURRENCY = "jm_read_max_concurrency";
 
 export const DEFAULT_WHEEL_MULTIPLIER = 2.2;
 export const MIN_WHEEL_MULTIPLIER = 1;
@@ -8,6 +9,10 @@ export const MAX_WHEEL_MULTIPLIER = 6;
 export const DEFAULT_READ_IMG_SCALE = 1;
 export const MIN_READ_IMG_SCALE = 0.3;
 export const MAX_READ_IMG_SCALE = 1;
+
+export const DEFAULT_READ_MAX_CONCURRENCY = 3;
+export const MIN_READ_MAX_CONCURRENCY = 1;
+export const MAX_READ_MAX_CONCURRENCY = 8;
 
 export function getReadWheelMultiplier(): number {
   try {
@@ -33,6 +38,18 @@ export function getReadImageScale(): number {
   }
 }
 
+export function getReadMaxConcurrency(): number {
+  try {
+    const raw = localStorage.getItem(KEY_READ_MAX_CONCURRENCY);
+    if (!raw) return DEFAULT_READ_MAX_CONCURRENCY;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return DEFAULT_READ_MAX_CONCURRENCY;
+    return Math.min(MAX_READ_MAX_CONCURRENCY, Math.max(MIN_READ_MAX_CONCURRENCY, Math.round(n)));
+  } catch {
+    return DEFAULT_READ_MAX_CONCURRENCY;
+  }
+}
+
 export function setReadWheelMultiplier(v: number) {
   const n = Math.min(MAX_WHEEL_MULTIPLIER, Math.max(MIN_WHEEL_MULTIPLIER, v));
   try {
@@ -47,6 +64,16 @@ export function setReadImageScale(v: number) {
   const n = Math.min(MAX_READ_IMG_SCALE, Math.max(MIN_READ_IMG_SCALE, v));
   try {
     localStorage.setItem(KEY_READ_IMG_SCALE, String(n));
+  } catch {
+    // ignore
+  }
+  window.dispatchEvent(new Event("jm:settings"));
+}
+
+export function setReadMaxConcurrency(v: number) {
+  const n = Math.min(MAX_READ_MAX_CONCURRENCY, Math.max(MIN_READ_MAX_CONCURRENCY, Math.round(v)));
+  try {
+    localStorage.setItem(KEY_READ_MAX_CONCURRENCY, String(n));
   } catch {
     // ignore
   }
