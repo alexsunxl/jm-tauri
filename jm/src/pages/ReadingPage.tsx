@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
-
 import type { Session } from "../auth/session";
 import { getImgBase } from "../config/endpoints";
 import Loading from "../components/Loading";
@@ -10,6 +9,16 @@ import type { ReadProgress } from "../reading/progress";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
 import { Info } from "lucide-react";
+import {
+  DEFAULT_READ_IMG_SCALE,
+  getReadImageScale,
+  getReadWheelMultiplier,
+  MAX_READ_IMG_SCALE,
+  MIN_READ_IMG_SCALE,
+  setReadWheelMultiplier,
+  subscribeSettings,
+} from "../settings/userSettings";
+
 
 type LoadInfoStats = {
   done: number;
@@ -28,7 +37,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="fixed right-4 top-4 z-40 flex items-start gap-2">
+    <div className="fixed right-4 top-8 z-40 flex items-start gap-2">
       <button
         type="button"
         className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1 text-xs text-white shadow-md backdrop-blur"
@@ -55,15 +64,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
     </div>
   );
 });
-import {
-  DEFAULT_READ_IMG_SCALE,
-  getReadImageScale,
-  getReadWheelMultiplier,
-  MAX_READ_IMG_SCALE,
-  MIN_READ_IMG_SCALE,
-  setReadWheelMultiplier,
-  subscribeSettings,
-} from "../settings/userSettings";
+
 
 type Chapter = {
   id: string | number;
