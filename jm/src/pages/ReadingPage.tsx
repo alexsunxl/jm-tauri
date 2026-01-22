@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 
 import type { Session } from "../auth/session";
@@ -9,6 +9,52 @@ import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
+import { Info } from "lucide-react";
+
+type LoadInfoStats = {
+  done: number;
+  inFlight: number;
+  queued: number;
+  errors: number;
+};
+
+const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
+  imagesLength: number;
+  imgBase: string;
+  scrambleId: number | null;
+  scrambleError: string;
+  segmentReady: boolean;
+  stats: LoadInfoStats | null;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="fixed right-4 top-4 z-40 flex items-start gap-2">
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1 text-xs text-white shadow-md backdrop-blur"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Info className="h-3.5 w-3.5" />
+        载入信息
+        <span className="ml-1 opacity-75">{open ? "收起" : "展开"}</span>
+      </button>
+      {open ? (
+        <div className="max-w-[85vw] rounded-lg border border-zinc-200 bg-white/95 p-3 text-xs text-zinc-700 shadow-lg backdrop-blur">
+          <div>共 {props.imagesLength} 张（图片域名：{props.imgBase}）</div>
+          {props.scrambleId != null ? <div>scramble_id：{props.scrambleId}</div> : null}
+          {props.scrambleError ? <div>scramble获取失败：{props.scrambleError}</div> : null}
+          <div>{props.segmentReady ? "已计算分割参数" : "计算分割参数中…"}</div>
+          {props.segmentReady && props.stats ? (
+            <div>
+              已完成 {props.stats.done} · 处理中 {props.stats.inFlight} · 队列中{" "}
+              {props.stats.queued} · 错误 {props.stats.errors}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+});
 import {
   DEFAULT_READ_IMG_SCALE,
   getReadImageScale,
@@ -351,6 +397,17 @@ export default function ReadingPage(props: {
   }, [chapter?.series_id, props.aid, props.chapters]);
 
   const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
+  const loadInfoStats = useMemo<LoadInfoStats | null>(() => {
+    if (!segmentNums) return null;
+    const processedDone = Object.values(processed).filter((v) => Boolean(v.url)).length;
+    const processedErr = Object.values(processed).filter((v) => Boolean(v.error)).length;
+    const direct = directLoaded.size;
+    const done = processedDone + direct;
+    const inq = inFlight.current.size;
+    const queued =
+      wanted.size - done - processedErr - inq > 0 ? wanted.size - done - processedErr - inq : 0;
+    return { done, inFlight: inq, queued, errors: processedErr };
+  }, [directLoaded, processed, segmentNums, wanted.size]);
 
   useEffect(() => {
     let cancelled = false;
@@ -733,7 +790,7 @@ export default function ReadingPage(props: {
     if (!segmentNums?.length || images.length === 0) return;
     const total = images.length;
     const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
-    const seed = [curIndex - 1, curIndex, curIndex + 1, curIndex + 2];
+    const seed = [curIndex - 1, curIndex, curIndex + 1, curIndex + 2, curIndex + 3];
     setWanted((prev) => {
       const next = new Set(prev);
       for (const idx of seed) {
@@ -749,7 +806,8 @@ export default function ReadingPage(props: {
     const total = images.length;
     const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
     let left = curIndex - 2;
-    let right = curIndex + 3;
+    let right = curIndex + 4;
+    let tick = 0;
     const timer = window.setInterval(() => {
       setWanted((prev) => {
         if (prev.size >= total) return prev;
@@ -757,16 +815,18 @@ export default function ReadingPage(props: {
         while (left >= 0 && next.has(left)) left -= 1;
         while (right < total && next.has(right)) right += 1;
         let updated = false;
-        if (left >= 0) {
-          next.add(left);
-          left -= 1;
-          updated = true;
-        }
         if (right < total) {
           next.add(right);
           right += 1;
           updated = true;
         }
+        const shouldAddLeft = !updated || tick % 3 === 2;
+        if (shouldAddLeft && left >= 0) {
+          next.add(left);
+          left -= 1;
+          updated = true;
+        }
+        tick += 1;
         return updated ? next : prev;
       });
     }, 250);
@@ -1045,26 +1105,14 @@ export default function ReadingPage(props: {
         ) : null}
 
         {!loading && chapter && images.length ? (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-            共 {images.length} 张（图片域名：{getImgBase()}）
-            {scrambleId != null ? ` · scramble_id=${scrambleId}` : ""}
-            {scrambleError ? ` · scramble获取失败：${scrambleError}` : ""}
-            {segmentNums ? ` · 已计算分割参数` : " · 计算分割参数中…"}
-            {segmentNums
-              ? (() => {
-                  const processedDone = Object.values(processed).filter((v) => Boolean(v.url)).length;
-                  const processedErr = Object.values(processed).filter((v) => Boolean(v.error)).length;
-                  const direct = directLoaded.size;
-                  const done = processedDone + direct;
-                  const inq = inFlight.current.size;
-                  const queued =
-                    wanted.size - done - processedErr - inq > 0
-                      ? wanted.size - done - processedErr - inq
-                      : 0;
-                  return ` · 已完成 ${done} · 处理中 ${inq} · 队列中 ${queued} · 错误 ${processedErr}`;
-                })()
-              : ""}
-          </div>
+          <ReadingLoadInfo
+            imagesLength={images.length}
+            imgBase={getImgBase()}
+            scrambleId={scrambleId}
+            scrambleError={scrambleError}
+            segmentReady={Boolean(segmentNums)}
+            stats={loadInfoStats}
+          />
         ) : null}
 
         <div className="flex flex-col">
