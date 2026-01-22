@@ -424,6 +424,7 @@ function AppRoutes() {
   }, []);
 
   const onAuthExpired = useCallback(() => {
+    autoLoginAttemptedRef.current = false;
     clearSession();
     setSession(null);
   }, []);
