@@ -730,30 +730,48 @@ export default function ReadingPage(props: {
   }, [images, props.chapterId, scrambleId]);
 
   useEffect(() => {
-    if (!segmentNums?.length) return;
+    if (!segmentNums?.length || images.length === 0) return;
+    const total = images.length;
+    const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
+    const seed = [curIndex - 1, curIndex, curIndex + 1, curIndex + 2];
     setWanted((prev) => {
       const next = new Set(prev);
-      next.add(0);
-      next.add(1);
-      next.add(2);
+      for (const idx of seed) {
+        if (idx < 0 || idx >= total) continue;
+        next.add(idx);
+      }
       return next;
     });
-  }, [segmentNums]);
+  }, [segmentNums, images.length, props.startPage]);
 
   useEffect(() => {
     if (!segmentNums?.length || images.length === 0) return;
-    let idx = 0;
+    const total = images.length;
+    const curIndex = Math.min(total - 1, Math.max(0, (props.startPage ?? 1) - 1));
+    let left = curIndex - 2;
+    let right = curIndex + 3;
     const timer = window.setInterval(() => {
       setWanted((prev) => {
-        if (prev.size >= images.length) return prev;
+        if (prev.size >= total) return prev;
         const next = new Set(prev);
-        while (idx < images.length && next.has(idx)) idx += 1;
-        if (idx < images.length) next.add(idx);
-        return next;
+        while (left >= 0 && next.has(left)) left -= 1;
+        while (right < total && next.has(right)) right += 1;
+        let updated = false;
+        if (left >= 0) {
+          next.add(left);
+          left -= 1;
+          updated = true;
+        }
+        if (right < total) {
+          next.add(right);
+          right += 1;
+          updated = true;
+        }
+        return updated ? next : prev;
       });
     }, 250);
     return () => window.clearInterval(timer);
-  }, [images.length, segmentNums]);
+  }, [images.length, segmentNums, props.startPage]);
 
   const onVisible = useCallback((index: number) => {
     setWanted((prev) => {
