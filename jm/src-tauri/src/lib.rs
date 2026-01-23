@@ -3579,14 +3579,11 @@ async fn api_image_descramble_file(
     registry: tauri::State<'_, CancelRegistry>,
 ) -> Result<String, String> {
     let started = Instant::now();
+    let num = if num <= 1 { 1 } else { num };
     logl!(
         "[tauri][imgfile] start url={:?} num={} read_key={:?}",
         url, num, read_key
     );
-
-    if num <= 1 {
-        return Ok(url);
-    }
 
     let token = read_key.as_deref().map(|k| registry.token_for(k));
     if let Some(t) = &token {

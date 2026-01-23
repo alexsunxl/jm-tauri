@@ -157,17 +157,15 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
   }, [props.segmentNums]);
 
   const emitInflight = useCallback(() => {
-    const segs = segmentNumsRef.current;
     const total = imagesRef.current.length;
     const count = inFlight.current.size;
-    if (!segs || total === 0 || count === 0) {
+    if (total === 0 || count === 0) {
       props.onInflightChange([], count);
       return;
     }
     const pages: number[] = [];
     inFlight.current.forEach((idx) => {
       if (idx < 0 || idx >= total) return;
-      if ((segs[idx] ?? 0) <= 1) return;
       pages.push(idx + 1);
     });
     pages.sort((a, b) => a - b);
@@ -230,7 +228,6 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     const consider = (idx: number) => {
       if (startNow.length >= available) return;
       if (idx < 0 || idx >= total) return;
-      if ((currentSegs[idx] ?? 0) <= 1) return;
       const done = props.processedRef.current[idx];
       if (done?.url || done?.error) return;
       if (inFlight.current.has(idx)) return;
@@ -254,7 +251,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
           const imgs = imagesRef.current;
           const img = imgs[idx];
           if (!img) return;
-          const num = segs?.[idx] ?? 0;
+          const num = Math.max(1, segs?.[idx] ?? 1);
           const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
           const fileOrUrl = await invoke<string>("api_image_descramble_file", {
             url: img.url,
@@ -428,8 +425,6 @@ function ProcessedImage(props: {
   index: number;
   height: number;
   onVisible: (index: number) => void;
-  onDirectLoaded: (index: number) => void;
-  onDirectError: (index: number, error: string) => void;
   onRetry: (index: number) => void;
   onMeasured: (index: number, height: number) => void;
   processedUrl?: string;
@@ -475,36 +470,6 @@ function ProcessedImage(props: {
             重试
           </button>
         </div>
-      </div>
-    );
-  }
-
-  if (props.num <= 1) {
-    const retrySuffix = props.retries
-      ? `${props.src.includes("?") ? "&" : "?"}retry=${props.retries}`
-      : "";
-    const directSrc = `${props.src}${retrySuffix}`;
-    return (
-      <div ref={ref} className={containerClass} style={containerStyle}>
-        <img
-          src={directSrc}
-          loading="lazy"
-          className="h-full w-full object-contain"
-          alt={props.alt}
-          draggable={false}
-          onDragStart={(e) => e.preventDefault()}
-          onError={() => props.onDirectError(props.index, "img onError")}
-          onLoad={(e) => {
-            props.onDirectLoaded(props.index);
-            const img = e.currentTarget;
-            if (img.naturalWidth && img.naturalHeight) {
-              const ratio = img.naturalHeight / img.naturalWidth;
-              const width = ref.current?.clientWidth ?? img.clientWidth;
-              const next = Math.max(1, Math.round(width * ratio));
-              if (next !== props.height) props.onMeasured(props.index, next);
-            }
-          }}
-        />
       </div>
     );
   }
@@ -578,7 +543,6 @@ export default function ReadingPage(props: {
   const [scrambleError, setScrambleError] = useState<string>("");
   const [segmentNums, setSegmentNums] = useState<number[] | null>(null);
   const [processed, setProcessed] = useState<ProcessedMap>({});
-  const [directLoaded, setDirectLoaded] = useState<Set<number>>(() => new Set());
   const processedRef = useRef(processed);
   const genRef = useRef(0);
   const objectUrlsByIndex = useRef<Map<number, string>>(new Map());
@@ -672,10 +636,9 @@ export default function ReadingPage(props: {
     if (!segmentNums) return null;
     const processedDone = Object.values(processed).filter((v) => Boolean(v.url)).length;
     const processedErr = Object.values(processed).filter((v) => Boolean(v.error)).length;
-    const direct = directLoaded.size;
-    const done = processedDone + direct;
+    const done = processedDone;
     return { done, inFlight: inflightCount, errors: processedErr };
-  }, [directLoaded, inflightCount, processed, segmentNums]);
+  }, [inflightCount, processed, segmentNums]);
 
   useEffect(() => {
     let cancelled = false;
@@ -830,7 +793,6 @@ export default function ReadingPage(props: {
 
     genRef.current += 1;
     setProcessed({});
-    setDirectLoaded(new Set());
     setItemBaseHeights({});
     setLocalScale(loadLocalImageScale(props.aid));
     setInflightCount(0);
@@ -1061,23 +1023,6 @@ export default function ReadingPage(props: {
     // no-op: queue is generated on-demand by current page
   }, []);
 
-  const onDirectLoaded = useCallback((index: number) => {
-    setDirectLoaded((prev) => {
-      if (prev.has(index)) return prev;
-      const next = new Set(prev);
-      next.add(index);
-      return next;
-    });
-  }, []);
-
-  const onDirectError = useCallback((index: number, msg: string) => {
-    setProcessed((prev) => {
-      if (prev[index]?.error) return prev;
-      const retries = prev[index]?.retries ?? 0;
-      return { ...prev, [index]: { ...prev[index], error: msg, retries } };
-    });
-  }, []);
-
   useEffect(() => {
     processedRef.current = processed;
   }, [processed]);
@@ -1254,18 +1199,13 @@ export default function ReadingPage(props: {
             <div style={{ height: `${heightPrefix[windowRange.start] ?? 0}px` }} />
             {images.slice(windowRange.start, windowRange.end).map((img, offset) => {
               const idx = windowRange.start + offset;
-              const num = segmentNums?.[idx] ?? 0;
               const done = processed[idx];
-              const isQueued =
-                num > 1 &&
-                !done?.url &&
-                !done?.error &&
-                !inflightSet.has(idx);
+              const isQueued = !done?.url && !done?.error && !inflightSet.has(idx);
               return (
                 <div key={`${idx}-${img.url}`} style={{ paddingBottom: `${ITEM_GAP}px` }}>
                   <ProcessedImage
                     src={img.url}
-                    num={num}
+                    num={segmentNums?.[idx] ?? 0}
                     alt={`p${idx + 1}`}
                     index={idx}
                     height={Math.max(
@@ -1273,8 +1213,6 @@ export default function ReadingPage(props: {
                       Math.round((itemBaseHeights[idx] ?? DEFAULT_ITEM_HEIGHT) * effectiveScale),
                     )}
                     onVisible={onVisible}
-                    onDirectLoaded={onDirectLoaded}
-                    onDirectError={onDirectError}
                     onRetry={onRetry}
                     onMeasured={(i, h) =>
                       setItemBaseHeights((prev) => (prev[i] === h ? prev : { ...prev, [i]: h }))

@@ -265,16 +265,12 @@ export default function ReadingPullContainer(props: {
               transition: pulling ? "none" : "transform 1.6s cubic-bezier(0.2, 0.8, 0.2, 1)",
             }}
           >
-            {refreshing ? (
-              <>
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                正在刷新...
-              </>
-            ) : pullDistance >= PULL_THRESHOLD ? (
-              "松开刷新"
-            ) : (
-              "下拉刷新完成"
-            )}
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            {refreshing
+              ? "正在刷新..."
+              : pullDistance >= PULL_THRESHOLD
+                ? "松开刷新"
+                : "下拉刷新完成"}
           </div>
         </div>
       ) : null}
