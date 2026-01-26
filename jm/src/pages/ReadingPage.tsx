@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { RefreshCw } from "lucide-react";
+import { AlertTriangle, Info, RefreshCw } from "lucide-react";
 import type { Session } from "../auth/session";
 import { getImgBase } from "../config/endpoints";
 import Loading from "../components/Loading";
@@ -9,7 +9,6 @@ import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
-import { Info } from "lucide-react";
 import {
   DEFAULT_READ_IMG_SCALE,
   getReadImageScale,
@@ -100,6 +99,8 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   segmentReady: boolean;
   stats: LoadInfoStats | null;
   inflightPages: number[];
+  errorCount: number;
+  onRetryAllErrors: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const maxQueuedShow = 6;
@@ -115,7 +116,13 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
       >
         <Info className="h-3.5 w-3.5" />
         载入信息
-        <span className="ml-1 opacity-75">{open ? "收起" : "展开"}</span>
+        {props.errorCount > 0 ? (
+          <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-500/90 px-2 py-0.5 text-[10px] font-semibold text-white">
+            <AlertTriangle className="h-3 w-3" />
+            {props.errorCount}
+          </span>
+        ) : null}
+        <span className="ml-2 opacity-75">{open ? "收起" : "展开"}</span>
       </button>
       {open ? (
         <div className="mt-2 max-w-[85vw] rounded-lg border border-zinc-200 bg-white/95 p-3 text-xs text-zinc-700 shadow-lg backdrop-blur">
@@ -128,6 +135,16 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
               已完成 {props.stats.done} · 处理中 {props.stats.inFlight} · 错误{" "}
               {props.stats.errors}
             </div>
+          ) : null}
+          {props.errorCount > 0 ? (
+            <button
+              type="button"
+              className="mt-2 inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700 hover:bg-red-100"
+              onClick={props.onRetryAllErrors}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              重试全部错误
+            </button>
           ) : null}
           {props.segmentReady && props.inflightPages.length ? (
             <div>
@@ -632,13 +649,20 @@ export default function ReadingPage(props: {
   const requestPump = useCallback(() => {
     setPumpToken((v) => v + 1);
   }, []);
+  const processedStats = useMemo(() => {
+    let done = 0;
+    let errors = 0;
+    for (const v of Object.values(processed)) {
+      if (v.url) done += 1;
+      if (v.error) errors += 1;
+    }
+    return { done, errors };
+  }, [processed]);
+  const errorCount = processedStats.errors;
   const loadInfoStats = useMemo<LoadInfoStats | null>(() => {
     if (!segmentNums) return null;
-    const processedDone = Object.values(processed).filter((v) => Boolean(v.url)).length;
-    const processedErr = Object.values(processed).filter((v) => Boolean(v.error)).length;
-    const done = processedDone;
-    return { done, inFlight: inflightCount, errors: processedErr };
-  }, [inflightCount, processed, segmentNums]);
+    return { done: processedStats.done, inFlight: inflightCount, errors: processedStats.errors };
+  }, [inflightCount, processedStats, segmentNums]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1038,6 +1062,21 @@ export default function ReadingPage(props: {
     },
     [requestPump],
   );
+  const handleRetryAllErrors = useCallback(() => {
+    if (errorCount === 0) return;
+    setProcessed((prev) => {
+      let changed = false;
+      const next: ProcessedMap = { ...prev };
+      for (const [key, value] of Object.entries(prev)) {
+        if (!value?.error) continue;
+        const retries = (value.retries ?? 0) + 1;
+        next[Number(key)] = { ...value, error: undefined, retries };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+    requestPump();
+  }, [errorCount, requestPump]);
 
   useEffect(() => {
     return () => {
@@ -1191,6 +1230,8 @@ export default function ReadingPage(props: {
             segmentReady={Boolean(segmentNums)}
             stats={loadInfoStats}
             inflightPages={inflightPages}
+            errorCount={errorCount}
+            onRetryAllErrors={handleRetryAllErrors}
           />
         ) : null}
 
