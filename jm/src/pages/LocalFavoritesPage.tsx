@@ -19,6 +19,12 @@ type LocalFavoriteItem = {
   latestChapterSort?: string | null;
 };
 
+type LocalFavoritesListResponse = {
+  total?: number;
+  filtered?: number;
+  list?: LocalFavoriteItem[];
+};
+
 type FollowStateEntry = {
   aid: string;
   lastKnownChapterId: string;
@@ -47,6 +53,10 @@ export default function LocalFavoritesPage(props: {
     }
   });
   const [items, setItems] = useState<LocalFavoriteItem[]>([]);
+  const [stats, setStats] = useState<{ total: number; filtered: number }>({
+    total: 0,
+    filtered: 0,
+  });
   const [followSet, setFollowSet] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
@@ -60,8 +70,27 @@ export default function LocalFavoritesPage(props: {
     setLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const res = await invoke<LocalFavoriteItem[]>("api_local_favorites_list", { kind });
-      setItems(Array.isArray(res) ? res : []);
+      const res = await invoke<LocalFavoritesListResponse | LocalFavoriteItem[]>(
+        "api_local_favorites_list",
+        { kind },
+      );
+      const list = Array.isArray(res)
+        ? res
+        : Array.isArray(res?.list)
+          ? res.list
+          : [];
+      const total = Array.isArray(res)
+        ? list.length
+        : typeof res?.total === "number"
+          ? res.total
+          : list.length;
+      const filtered = Array.isArray(res)
+        ? list.length
+        : typeof res?.filtered === "number"
+          ? res.filtered
+          : list.length;
+      setItems(list);
+      setStats({ total, filtered });
       const follow = await invoke<FollowStateEntry[]>("api_follow_state_list");
       const set = new Set(
         Array.isArray(follow) ? follow.map((f) => String(f.aid)) : [],
@@ -71,6 +100,7 @@ export default function LocalFavoritesPage(props: {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       setItems([]);
+      setStats({ total: 0, filtered: 0 });
       setFollowSet(new Set());
     } finally {
       setLoading(false);
@@ -179,13 +209,14 @@ export default function LocalFavoritesPage(props: {
   return (
     <div className="flex flex-col gap-3">
       <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-        收藏(本地) · 共 {items.length} 条
+        收藏(本地) · 当前：{stats.filtered}
+        <span className="text-zinc-400">（总数：{stats.total}）</span>
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 text-sm font-medium text-zinc-900">列表</div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 pb-3">
           <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
             {(
               [

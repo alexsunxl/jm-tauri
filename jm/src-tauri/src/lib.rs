@@ -146,6 +146,14 @@ struct LocalFavoriteView {
     latest_chapter_sort: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFavoritesListResponse {
+    total: u64,
+    filtered: u64,
+    list: Vec<LocalFavoriteView>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LatestChapterEntry {
@@ -3405,7 +3413,7 @@ fn jmcache_protocol<R: tauri::Runtime>(
 async fn api_local_favorites_list(
     kind: Option<String>,
     store: tauri::State<'_, LocalFavoritesStore>,
-) -> Result<Vec<LocalFavoriteView>, String> {
+) -> Result<LocalFavoritesListResponse, String> {
     let tree = store.tree()?;
     let latest_tree = read_latest_tree()?;
 
@@ -3428,10 +3436,13 @@ async fn api_local_favorites_list(
     }
 
     let mut items = Vec::new();
+    let mut total: u64 = 0;
+    let mut filtered: u64 = 0;
     for res in tree.iter() {
         let (_, v) = res.map_err(|e| format!("sled iter failed: {e}"))?;
         let it: LocalFavoriteItem =
             bincode::deserialize(&v).map_err(|e| format!("decode local favorite failed: {e}"))?;
+        total += 1;
         let latest = latest_map
             .get(it.aid.as_bytes())
             .and_then(|entry| entry.latest_chapter_sort.clone());
@@ -3441,6 +3452,7 @@ async fn api_local_favorites_list(
                 continue;
             }
         }
+        filtered += 1;
         items.push(LocalFavoriteView {
             aid: it.aid,
             title: it.title,
@@ -3452,7 +3464,11 @@ async fn api_local_favorites_list(
         });
     }
     items.sort_by_key(|x| -x.updated_at);
-    Ok(items)
+    Ok(LocalFavoritesListResponse {
+        total,
+        filtered,
+        list: items,
+    })
 }
 
 #[tauri::command]
