@@ -52,14 +52,15 @@ export default function LocalFavoritesPage(props: {
   const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "single" | "multi">("all");
   const { showToast } = useToast();
 
-  const load = async () => {
+  const load = async (kind = typeFilter) => {
     setError("");
     setLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const res = await invoke<LocalFavoriteItem[]>("api_local_favorites_list");
+      const res = await invoke<LocalFavoriteItem[]>("api_local_favorites_list", { kind });
       setItems(Array.isArray(res) ? res : []);
       const follow = await invoke<FollowStateEntry[]>("api_follow_state_list");
       const set = new Set(
@@ -77,8 +78,8 @@ export default function LocalFavoritesPage(props: {
   };
 
   useEffect(() => {
-    void load();
-  }, []);
+    void load(typeFilter);
+  }, [typeFilter]);
 
   useEffect(() => {
     try {
@@ -185,8 +186,32 @@ export default function LocalFavoritesPage(props: {
         <div className="mb-3 text-sm font-medium text-zinc-900">列表</div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
+            {(
+              [
+                { key: "all", label: "全部" },
+                { key: "single", label: "单本" },
+                { key: "multi", label: "多话" },
+              ] as const
+            ).map((opt) => {
+              const active = typeFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className={`h-8 rounded-sm px-3 text-sm ${
+                    active ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-50"
+                  }`}
+                  onClick={() => setTypeFilter(opt.key)}
+                  aria-pressed={active}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
           <input
-            className="h-9 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm"
+            className="h-9 min-w-[180px] flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm"
             placeholder="过滤：标题/作者/AID"
             value={filter}
             onChange={(e) => setFilter(e.currentTarget.value)}

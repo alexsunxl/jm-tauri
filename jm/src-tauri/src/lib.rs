@@ -3403,10 +3403,21 @@ fn jmcache_protocol<R: tauri::Runtime>(
 
 #[tauri::command]
 async fn api_local_favorites_list(
+    kind: Option<String>,
     store: tauri::State<'_, LocalFavoritesStore>,
 ) -> Result<Vec<LocalFavoriteView>, String> {
     let tree = store.tree()?;
     let latest_tree = read_latest_tree()?;
+
+    let kind = kind.unwrap_or_else(|| "all".to_string());
+    let kind = kind.trim();
+    let filter_multi = if kind.eq_ignore_ascii_case("single") {
+        Some(false)
+    } else if kind.eq_ignore_ascii_case("multi") {
+        Some(true)
+    } else {
+        None
+    };
 
     let mut latest_map = HashMap::new();
     for res in latest_tree.iter() {
@@ -3424,6 +3435,12 @@ async fn api_local_favorites_list(
         let latest = latest_map
             .get(it.aid.as_bytes())
             .and_then(|entry| entry.latest_chapter_sort.clone());
+        if let Some(need_multi) = filter_multi {
+            let is_multi = latest.is_some();
+            if need_multi != is_multi {
+                continue;
+            }
+        }
         items.push(LocalFavoriteView {
             aid: it.aid,
             title: it.title,
