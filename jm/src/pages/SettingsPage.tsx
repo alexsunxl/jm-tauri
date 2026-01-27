@@ -267,7 +267,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
               <HelpCircle className="h-4 w-4" />
             </button>
             {cacheTipOpen ? (
-              <div className="absolute left-0 top-9 z-10 w-64 max-w-[75vw] rounded-md border border-zinc-200 bg-white p-2 text-xs text-zinc-700 shadow-md md:left-auto md:right-0">
+              <div className="absolute left-1/2 top-9 z-10 w-[min(320px,90vw)] -translate-x-1/2 rounded-md border border-zinc-200 bg-white p-2 text-xs text-zinc-700 shadow-md break-words md:left-auto md:right-0 md:translate-x-0 md:w-64">
                 超过 2GB 时，从最久未访问的漫画开始清理；每次清理仅删除阅读缓存目录下的内容。
               </div>
             ) : null}
