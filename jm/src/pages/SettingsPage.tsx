@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-opener";
 
 import type { Session } from "../auth/session";
 import {
@@ -22,6 +23,29 @@ import {
 import { useToast } from "../components/Toast";
 import { Check, HelpCircle } from "lucide-react";
 
+type UpdateAssetInfo = {
+  name: string;
+  url: string;
+  size: number;
+};
+
+type UpdateCheckInfo = {
+  currentVersion: string;
+  currentTag?: string | null;
+  latestTag?: string | null;
+  releaseUrl?: string | null;
+  notes?: string | null;
+  hasUpdate: boolean;
+  asset?: UpdateAssetInfo | null;
+  isDev: boolean;
+  compareMode?: string | null;
+};
+
+type UpdateDownloadInfo = {
+  path: string;
+  name: string;
+};
+
 export default function SettingsPage(props: { session: Session; onLogout: () => void }) {
   const { showToast } = useToast();
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
@@ -40,6 +64,11 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
     elapsedMs?: number;
   } | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
+  const isDevBuild = import.meta.env.DEV;
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckInfo | null>(null);
+  const [updateError, setUpdateError] = useState("");
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateDownloading, setUpdateDownloading] = useState(false);
   const [cacheError, setCacheError] = useState("");
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const [cacheCleaning, setCacheCleaning] = useState(false);
@@ -211,6 +240,48 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       setCacheCleaning(false);
     }
   };
+
+  const checkUpdate = useCallback(async () => {
+    setUpdateLoading(true);
+    setUpdateError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const info = await invoke<UpdateCheckInfo>("app_update_check");
+      setUpdateInfo(info);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setUpdateError(msg);
+    } finally {
+      setUpdateLoading(false);
+    }
+  }, []);
+
+  const downloadUpdate = useCallback(async () => {
+    if (!updateInfo?.asset?.url) {
+      showToast({ ok: false, text: "暂无可用更新包" });
+      return;
+    }
+    setUpdateDownloading(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const res = await invoke<UpdateDownloadInfo>("app_update_download", {
+        url: updateInfo.asset.url,
+        name: updateInfo.asset.name,
+      });
+      showToast({ ok: true, text: `已下载：${res.path}` });
+      await open(res.path);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast({ ok: false, text: `更新失败：${msg}` });
+    } finally {
+      setUpdateDownloading(false);
+    }
+  }, [showToast, updateInfo?.asset?.name, updateInfo?.asset?.url]);
+
+  useEffect(() => {
+    if (isDevBuild) return;
+    void checkUpdate();
+  }, [checkUpdate, isDevBuild]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -552,7 +623,72 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       {appVersion ? (
         <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
           <div className="mb-3 text-sm font-medium text-zinc-900">关于</div>
-          <div className="text-sm text-zinc-700">版本：{appVersion}</div>
+          <div className="text-sm text-zinc-700">
+            版本：{appVersion}（{isDevBuild ? "dev" : "release"}）
+          </div>
+          {updateInfo?.currentTag ? (
+            <div className="mt-1 text-xs text-zinc-500">构建：{updateInfo.currentTag}</div>
+          ) : null}
+
+          {isDevBuild ? (
+            <div className="mt-2 text-xs text-zinc-500">开发模式不检查更新</div>
+          ) : (
+            <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
+              <div>最新版本：{updateInfo?.latestTag ?? "—"}</div>
+              <div>
+                状态：
+                {updateInfo
+                  ? updateInfo.hasUpdate
+                    ? "发现新版本"
+                    : "已是最新"
+                  : "—"}
+              </div>
+              <div>
+                更新包：
+                {updateInfo
+                  ? updateInfo.asset
+                    ? `${updateInfo.asset.name}（${formatBytes(updateInfo.asset.size)}）`
+                    : "当前平台暂无自动更新包"
+                  : "—"}
+              </div>
+              {updateLoading ? <div className="mt-1 text-xs text-zinc-500">正在检查...</div> : null}
+              {updateDownloading ? (
+                <div className="mt-1 text-xs text-zinc-500">正在下载...</div>
+              ) : null}
+              {updateError ? (
+                <div className="mt-1 text-xs text-red-600">检查失败：{updateError}</div>
+              ) : null}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+                  onClick={() => void checkUpdate()}
+                  disabled={updateLoading}
+                >
+                  检查更新
+                </button>
+                {updateInfo?.hasUpdate && updateInfo.asset ? (
+                  <button
+                    type="button"
+                    className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+                    onClick={() => void downloadUpdate()}
+                    disabled={updateDownloading}
+                  >
+                    自动更新
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 hover:bg-zinc-50"
+                  onClick={() =>
+                    open(updateInfo?.releaseUrl || "https://github.com/alexsunxl/jm-tauri/releases/latest")
+                  }
+                >
+                  打开发布页
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
     </div>

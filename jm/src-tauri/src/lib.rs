@@ -87,6 +87,35 @@ struct ReadCacheStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+struct UpdateAssetInfo {
+    name: String,
+    url: String,
+    size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckInfo {
+    current_version: String,
+    current_tag: Option<String>,
+    latest_tag: Option<String>,
+    release_url: Option<String>,
+    notes: Option<String>,
+    has_update: bool,
+    asset: Option<UpdateAssetInfo>,
+    is_dev: bool,
+    compare_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadInfo {
+    path: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct ReadCacheComicStats {
     aid: String,
     files: u64,
@@ -677,6 +706,81 @@ fn http_client() -> Result<reqwest::Client, String> {
     builder.build().map_err(|e| format!("create http client failed: {e}"))
 }
 
+fn extract_build_tag(version: &str) -> Option<String> {
+    let trimmed = version.trim();
+    let (_, suffix) = trimmed.split_once('+')?;
+    let suffix = suffix.trim();
+    if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix.to_string())
+    }
+}
+
+fn parse_base_version(raw: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let main = trimmed
+        .split(|c| c == '+' || c == '-')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let parts: Vec<&str> = main.split('.').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let major = parts[0].parse().ok()?;
+    let minor = parts[1].parse().ok()?;
+    let patch = parts[2].parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn parse_version_from_tag(tag: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = tag.trim().trim_start_matches('v');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut buf = String::new();
+    let mut dots = 0usize;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_digit() {
+            buf.push(ch);
+            continue;
+        }
+        if ch == '.' {
+            buf.push(ch);
+            dots += 1;
+            continue;
+        }
+        if !buf.is_empty() {
+            break;
+        }
+    }
+    if dots < 2 {
+        return None;
+    }
+    parse_base_version(&buf)
+}
+
+fn pick_update_asset(assets: &[UpdateAssetInfo], os: &str) -> Option<UpdateAssetInfo> {
+    let normalized_os = os.to_lowercase();
+    let find_by_name = |name: &str| {
+        assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .cloned()
+    };
+    match normalized_os.as_str() {
+        "windows" => find_by_name("jm-windows.zip"),
+        "macos" => find_by_name("jm-macos.dmg"),
+        "android" => find_by_name("jm.apk"),
+        "linux" => find_by_name("jm-linux.AppImage").or_else(|| find_by_name("jm-linux.deb")),
+        _ => None,
+    }
+}
+
 fn register_cookie_jar() -> Arc<reqwest::cookie::Jar> {
     REGISTER_COOKIE_JAR
         .get_or_init(|| Arc::new(reqwest::cookie::Jar::default()))
@@ -946,6 +1050,143 @@ async fn api_config_set_socks_proxy(proxy: Option<String>) -> Result<(), String>
     cfg.socks_proxy = proxy;
     save_config_to_disk(&cfg)?;
     Ok(())
+}
+
+#[tauri::command]
+async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, String> {
+    let current_version = app.package_info().version.to_string();
+    let current_tag = extract_build_tag(&current_version);
+    let client = http_client()?;
+    let resp = client
+        .get("https://api.github.com/repos/alexsunxl/jm-tauri/releases/latest")
+        .header(reqwest::header::USER_AGENT, "jm-tauri")
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("fetch release failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("release http status {}", status.as_u16()));
+    }
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse release json failed: {e}"))?;
+    let latest_tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let release_url = json
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let notes = json
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let assets = json
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let name = item.get("name")?.as_str()?.to_string();
+                    let url = item.get("browser_download_url")?.as_str()?.to_string();
+                    let size = item.get("size")?.as_u64().unwrap_or(0);
+                    Some(UpdateAssetInfo { name, url, size })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let asset = pick_update_asset(&assets, std::env::consts::OS);
+
+    let mut has_update = false;
+    let mut compare_mode = None;
+    if let Some(latest) = latest_tag.as_deref() {
+        if let Some(current) = current_tag.as_deref() {
+            has_update = current != latest;
+            compare_mode = Some("tag".to_string());
+        } else if let (Some(cur), Some(lat)) =
+            (parse_base_version(&current_version), parse_version_from_tag(latest))
+        {
+            has_update = lat > cur;
+            compare_mode = Some("version".to_string());
+        } else {
+            has_update = true;
+            compare_mode = Some("unknown".to_string());
+        }
+    }
+
+    Ok(UpdateCheckInfo {
+        current_version,
+        current_tag,
+        latest_tag,
+        release_url,
+        notes,
+        has_update,
+        asset,
+        is_dev: cfg!(debug_assertions),
+        compare_mode,
+    })
+}
+
+#[tauri::command]
+async fn app_update_download(
+    app: tauri::AppHandle,
+    url: String,
+    name: Option<String>,
+) -> Result<UpdateDownloadInfo, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("download url is empty".to_string());
+    }
+    if !trimmed.starts_with("https://github.com/alexsunxl/jm-tauri/releases/download/") {
+        return Err("unsupported download url".to_string());
+    }
+
+    let raw_name = name
+        .and_then(|n| {
+            let t = n.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .or_else(|| trimmed.rsplit('/').next().map(|s| s.to_string()))
+        .unwrap_or_else(|| "update.bin".to_string());
+    let safe_name = sanitize_path_component(&raw_name);
+
+    let base_dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| format!("resolve download dir failed: {e}"))?;
+    let target_dir = base_dir.join("jm-updates");
+    std::fs::create_dir_all(&target_dir).map_err(|e| format!("mkdir failed: {e}"))?;
+    let dest = target_dir.join(&safe_name);
+
+    let client = http_client()?;
+    let mut resp = client
+        .get(trimmed)
+        .header(reqwest::header::USER_AGENT, "jm-tauri")
+        .send()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("download http status {}", status.as_u16()));
+    }
+
+    let mut file = std::fs::File::create(&dest).map_err(|e| format!("create file failed: {e}"))?;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("read update chunk failed: {e}"))?
+    {
+        file.write_all(&chunk).map_err(|e| format!("write update failed: {e}"))?;
+    }
+
+    Ok(UpdateDownloadInfo {
+        path: dest.to_string_lossy().to_string(),
+        name: safe_name,
+    })
 }
 
 #[tauri::command]
@@ -3979,6 +4220,8 @@ pub fn run() {
             greet,
             api_config_get,
             api_config_set_socks_proxy,
+            app_update_check,
+            app_update_download,
             api_read_progress_upsert,
             api_read_progress_clear,
             api_read_progress_export,

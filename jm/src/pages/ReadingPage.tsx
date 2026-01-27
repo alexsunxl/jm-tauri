@@ -107,6 +107,14 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   const inflightDisplay = props.inflightPages.slice(0, maxQueuedShow).map((p) => `p${p}`);
   const inflightTotal = props.stats?.inFlight ?? props.inflightPages.length;
   const inflightMore = Math.max(0, inflightTotal - inflightDisplay.length);
+  const loadComplete = Boolean(
+    props.stats &&
+      props.imagesLength > 0 &&
+      props.stats.done >= props.imagesLength &&
+      props.stats.inFlight === 0 &&
+      props.stats.errors === 0,
+  );
+  const infoTone = props.errorCount > 0 ? "text-red-200" : loadComplete ? "text-emerald-200" : "text-white";
   return (
     <div className="fixed right-4 top-10 z-40 flex flex-col items-end">
       <button
@@ -114,7 +122,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
         className="inline-flex items-center gap-1 rounded-full bg-black/60 px-3 py-1 text-xs text-white shadow-md backdrop-blur"
         onClick={() => setOpen((v) => !v)}
       >
-        <Info className="h-3.5 w-3.5" />
+        <Info className={`h-3.5 w-3.5 ${infoTone}`} />
         载入信息
         {props.errorCount > 0 ? (
           <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-500/90 px-2 py-0.5 text-[10px] font-semibold text-white">
