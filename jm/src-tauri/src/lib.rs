@@ -2273,6 +2273,38 @@ async fn api_daily_check(
 }
 
 #[tauri::command]
+async fn api_comments(
+    aid: String,
+    page: String,
+    cookies: HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    let aid_trim = aid.trim();
+    let page_trim = page.trim();
+    let page_val = if page_trim.is_empty() { "1" } else { page_trim };
+    let query = format!(
+        "mode=manhua&aid={}&page={}",
+        urlencoding::encode(aid_trim),
+        urlencoding::encode(page_val)
+    );
+    api_get_encrypted_with_query("/forum", Some(query), cookies).await
+}
+
+#[tauri::command]
+async fn api_comment_send(
+    aid: String,
+    comment: String,
+    comment_id: Option<String>,
+    cookies: HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    let cid = comment_id.unwrap_or_default();
+    let mut form = vec![("comment", comment.as_str()), ("aid", aid.as_str())];
+    if !cid.trim().is_empty() {
+        form.push(("comment_id", cid.as_str()));
+    }
+    api_post_encrypted("/comment", &form, cookies).await
+}
+
+#[tauri::command]
 async fn api_categories(cookies: HashMap<String, String>) -> Result<serde_json::Value, String> {
     api_get_encrypted_with_query("/categories", None, cookies).await
 }
@@ -3959,6 +3991,8 @@ pub fn run() {
             api_history,
             api_daily,
             api_daily_check,
+            api_comments,
+            api_comment_send,
             api_categories,
             api_read_cache_stats,
             api_read_cache_refresh,
