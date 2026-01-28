@@ -207,6 +207,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
   useEffect(() => {
     inFlight.current.clear();
     clearPump();
+    imagesRef.current = [];
+    segmentNumsRef.current = null;
     emitInflight();
   }, [props.resetToken, clearPump, emitInflight]);
 
@@ -237,6 +239,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     const currentSegs = segmentNumsRef.current;
     const currentImages = imagesRef.current;
     if (!currentSegs?.length || currentImages.length === 0) return;
+    if (currentSegs.length !== currentImages.length) return;
     if (inFlight.current.size >= maxConcurrency) return;
 
     const total = currentImages.length;
@@ -366,6 +369,99 @@ type ChapterMeta = {
   chapterSort?: string;
   chapterName: string;
 };
+
+type ReadingImageListProps = {
+  aid: string;
+  chapterId: string;
+  startPage?: number;
+  images: ReadImage[];
+  segmentNums: number[] | null;
+  chapterMeta: ChapterMeta;
+  effectiveScale: number;
+  defaultItemHeight: number;
+  itemGap: number;
+  overscan: number;
+  processed: ProcessedMap;
+  inflightSet: Set<number>;
+  pageIndexRef: Ref<number | null>;
+  onRetry: (index: number) => void;
+  onPageChange: (page: number) => void;
+};
+
+const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListProps) {
+  const {
+    listRef,
+    windowRange,
+    currentPage,
+    itemBaseHeights,
+    setItemBaseHeights,
+    heightPrefix,
+    totalHeight,
+  } = useReadingWindow({
+    aid: props.aid,
+    startPage: props.startPage,
+    imagesLength: props.images.length,
+    effectiveScale: props.effectiveScale,
+    defaultItemHeight: props.defaultItemHeight,
+    itemGap: props.itemGap,
+    overscan: props.overscan,
+    chapterMeta: props.chapterMeta,
+    pageIndexRef: props.pageIndexRef,
+    resetKey: props.chapterId,
+  });
+
+  useEffect(() => {
+    props.onPageChange(currentPage);
+  }, [currentPage, props.onPageChange]);
+
+  const handleMeasured = useCallback(
+    (index: number, height: number) => {
+      setItemBaseHeights((prev) => (prev[index] === height ? prev : { ...prev, [index]: height }));
+    },
+    [setItemBaseHeights],
+  );
+
+  const handleVisible = useCallback((_index: number) => {}, []);
+
+  return (
+    <div className="flex flex-col">
+      <div ref={listRef}>
+        <div style={{ height: `${heightPrefix[windowRange.start] ?? 0}px` }} />
+        {props.images.slice(windowRange.start, windowRange.end).map((img, offset) => {
+          const idx = windowRange.start + offset;
+          const done = props.processed[idx];
+          const isQueued = !done?.url && !done?.error && !props.inflightSet.has(idx);
+          const base = itemBaseHeights[idx] ?? props.defaultItemHeight;
+          const height = Math.max(1, Math.round(base * props.effectiveScale));
+          const num = props.segmentNums?.[idx] ?? 0;
+          return (
+            <div key={`${idx}-${img.url}`} style={{ paddingBottom: `${props.itemGap}px` }}>
+              <ProcessedImage
+                src={img.url}
+                num={num}
+                alt={`p${idx + 1}`}
+                index={idx}
+                height={height}
+                onVisible={handleVisible}
+                onRetry={props.onRetry}
+                onMeasured={handleMeasured}
+                processedUrl={props.processed[idx]?.url}
+                error={props.processed[idx]?.error}
+                retries={props.processed[idx]?.retries}
+                isQueued={isQueued}
+              />
+            </div>
+          );
+        })}
+        <div
+          style={{
+            height: `${Math.max(0, totalHeight - (heightPrefix[windowRange.end] ?? 0))}px`,
+          }}
+        />
+      </div>
+    </div>
+  );
+});
 
 function normalizeImgUrl(p: string, chapterId: string) {
   if (!p) return "";
@@ -742,6 +838,10 @@ function useChapterLoad(params: {
 
   useEffect(() => {
     params.pageIndexRef.current = null;
+    setChapter(null);
+    setScrambleId(null);
+    setScrambleError("");
+    setSegmentNums(null);
   }, [params.chapterId, params.pageIndexRef]);
 
   useEffect(() => {
@@ -1004,26 +1104,10 @@ export default function ReadingPage(props: {
       pageIndexRef,
     });
 
-  const {
-    listRef,
-    windowRange,
-    currentPage,
-    itemBaseHeights,
-    setItemBaseHeights,
-    heightPrefix,
-    totalHeight,
-  } = useReadingWindow({
-    aid: props.aid,
-    startPage: props.startPage,
-    imagesLength: images.length,
-    effectiveScale,
-    defaultItemHeight: DEFAULT_ITEM_HEIGHT,
-    itemGap: ITEM_GAP,
-    overscan: OVERSCAN,
-    chapterMeta,
-    pageIndexRef,
-    resetKey: props.chapterId,
-  });
+  const [currentPage, setCurrentPage] = useState(1);
+  const handlePageChange = useCallback((page: number) => {
+    setCurrentPage((prev) => (prev === page ? prev : page));
+  }, []);
 
   const nextChapter = useMemo(() => {
     const list = [...(Array.isArray(props.chapters) ? props.chapters : [])].sort(
@@ -1166,6 +1250,7 @@ export default function ReadingPage(props: {
 
     genRef.current += 1;
     setProcessed({});
+    setCurrentPage(1);
     setLocalScale(loadLocalImageScale(props.aid));
     resetInflight();
     setSchedulerToken((v) => v + 1);
@@ -1174,7 +1259,7 @@ export default function ReadingPage(props: {
     }
     objectUrlsByIndex.current.clear();
     window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
-  }, [props.chapterId, resetInflight, setLocalScale]);
+  }, [props.chapterId, resetInflight, setCurrentPage, setLocalScale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1197,10 +1282,6 @@ export default function ReadingPage(props: {
     return () => {
       if (hideHeaderTimer.current) window.clearTimeout(hideHeaderTimer.current);
     };
-  }, []);
-
-  const onVisible = useCallback((_index: number) => {
-    // no-op: queue is generated on-demand by current page
   }, []);
 
   useEffect(() => {
@@ -1379,40 +1460,23 @@ export default function ReadingPage(props: {
           />
         ) : null}
 
-        <div className="flex flex-col">
-          <div ref={listRef}>
-            <div style={{ height: `${heightPrefix[windowRange.start] ?? 0}px` }} />
-            {images.slice(windowRange.start, windowRange.end).map((img, offset) => {
-              const idx = windowRange.start + offset;
-              const done = processed[idx];
-              const isQueued = !done?.url && !done?.error && !inflightSet.has(idx);
-              return (
-                <div key={`${idx}-${img.url}`} style={{ paddingBottom: `${ITEM_GAP}px` }}>
-                  <ProcessedImage
-                    src={img.url}
-                    num={segmentNums?.[idx] ?? 0}
-                    alt={`p${idx + 1}`}
-                    index={idx}
-                    height={Math.max(
-                      1,
-                      Math.round((itemBaseHeights[idx] ?? DEFAULT_ITEM_HEIGHT) * effectiveScale),
-                    )}
-                    onVisible={onVisible}
-                    onRetry={onRetry}
-                    onMeasured={(i, h) =>
-                      setItemBaseHeights((prev) => (prev[i] === h ? prev : { ...prev, [i]: h }))
-                    }
-                    processedUrl={processed[idx]?.url}
-                    error={processed[idx]?.error}
-                    retries={processed[idx]?.retries}
-                    isQueued={isQueued}
-                  />
-                </div>
-              );
-            })}
-            <div style={{ height: `${Math.max(0, totalHeight - (heightPrefix[windowRange.end] ?? 0))}px` }} />
-          </div>
-        </div>
+        <ReadingImageList
+          aid={props.aid}
+          chapterId={props.chapterId}
+          startPage={props.startPage}
+          images={images}
+          segmentNums={segmentNums}
+          chapterMeta={chapterMeta}
+          effectiveScale={effectiveScale}
+          defaultItemHeight={DEFAULT_ITEM_HEIGHT}
+          itemGap={ITEM_GAP}
+          overscan={OVERSCAN}
+          processed={processed}
+          inflightSet={inflightSet}
+          pageIndexRef={pageIndexRef}
+          onRetry={onRetry}
+          onPageChange={handlePageChange}
+        />
 
         {images.length > 0 ? (
           <div className="fixed bottom-6 right-4 z-30 rounded-full bg-black/50 px-3 py-1 text-xs text-white shadow-md backdrop-blur">

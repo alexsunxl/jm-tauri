@@ -1056,6 +1056,7 @@ async fn api_config_set_socks_proxy(proxy: Option<String>) -> Result<(), String>
 async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, String> {
     let current_version = app.package_info().version.to_string();
     let current_tag = extract_build_tag(&current_version);
+    let is_release = current_tag.as_deref().map(|t| t.starts_with("jm-")).unwrap_or(false);
     let client = http_client()?;
     let resp = client
         .get("https://api.github.com/repos/alexsunxl/jm-tauri/releases/latest")
@@ -1103,8 +1104,8 @@ async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, Stri
     let mut has_update = false;
     let mut compare_mode = None;
     if let Some(latest) = latest_tag.as_deref() {
-        if let Some(current) = current_tag.as_deref() {
-            has_update = current != latest;
+        if is_release {
+            has_update = current_tag.as_deref().map(|t| t != latest).unwrap_or(true);
             compare_mode = Some("tag".to_string());
         } else if let (Some(cur), Some(lat)) =
             (parse_base_version(&current_version), parse_version_from_tag(latest))
@@ -1125,7 +1126,7 @@ async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, Stri
         notes,
         has_update,
         asset,
-        is_dev: cfg!(debug_assertions),
+        is_dev: !is_release,
         compare_mode,
     })
 }

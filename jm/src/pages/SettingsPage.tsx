@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 
 import type { Session } from "../auth/session";
 import {
@@ -46,6 +46,15 @@ type UpdateDownloadInfo = {
   name: string;
 };
 
+function buildChannelFromVersion(version: string) {
+  const trimmed = version.trim();
+  const plusIdx = trimmed.indexOf("+");
+  if (plusIdx < 0) return "dev";
+  const tag = trimmed.slice(plusIdx + 1).trim();
+  if (!tag) return "dev";
+  return tag.startsWith("jm-") ? "release" : "dev";
+}
+
 export default function SettingsPage(props: { session: Session; onLogout: () => void }) {
   const { showToast } = useToast();
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
@@ -64,7 +73,8 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
     elapsedMs?: number;
   } | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
-  const isDevBuild = import.meta.env.DEV;
+  const buildChannel = useMemo(() => buildChannelFromVersion(appVersion), [appVersion]);
+  const isDevBuild = buildChannel !== "release";
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckInfo | null>(null);
   const [updateError, setUpdateError] = useState("");
   const [updateLoading, setUpdateLoading] = useState(false);
@@ -269,7 +279,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         name: updateInfo.asset.name,
       });
       showToast({ ok: true, text: `已下载：${res.path}` });
-      await open(res.path);
+      await openPath(res.path);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       showToast({ ok: false, text: `更新失败：${msg}` });
@@ -279,9 +289,10 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   }, [showToast, updateInfo?.asset?.name, updateInfo?.asset?.url]);
 
   useEffect(() => {
+    if (!appVersion) return;
     if (isDevBuild) return;
     void checkUpdate();
-  }, [checkUpdate, isDevBuild]);
+  }, [appVersion, checkUpdate, isDevBuild]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -681,7 +692,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
                   type="button"
                   className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 hover:bg-zinc-50"
                   onClick={() =>
-                    open(updateInfo?.releaseUrl || "https://github.com/alexsunxl/jm-tauri/releases/latest")
+                    openUrl(updateInfo?.releaseUrl || "https://github.com/alexsunxl/jm-tauri/releases/latest")
                   }
                 >
                   打开发布页
