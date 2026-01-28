@@ -123,7 +123,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
         onClick={() => setOpen((v) => !v)}
       >
         <Info className={`h-3.5 w-3.5 ${infoTone}`} />
-        载入信息
+        {loadComplete ? "加载完成" : "载入信息"}
         {props.errorCount > 0 ? (
           <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-500/90 px-2 py-0.5 text-[10px] font-semibold text-white">
             <AlertTriangle className="h-3 w-3" />
