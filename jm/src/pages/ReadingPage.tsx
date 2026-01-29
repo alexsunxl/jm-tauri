@@ -50,47 +50,6 @@ type ReadingSchedulerProps = {
   onInflightChange: (pages: number[], count: number) => void;
 };
 
-const ChapterNavBar = memo(function ChapterNavBar(props: {
-  chapters: ChapterNavItem[];
-  chapterId: string;
-  onOpenChapter: (chapterId: string, chapterTitle: string) => void;
-}) {
-  if (props.chapters.length <= 1) return null;
-  const list = [...props.chapters].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
-  const currentId = props.chapterId;
-  const curIdx = list.findIndex((c) => toId(c.id) === currentId);
-  const prev = curIdx > 0 ? list[curIdx - 1] : null;
-  const next = curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null;
-  return (
-    <div className="sticky bottom-0 z-10 mt-4 w-full rounded-lg border border-zinc-200 bg-white/70 p-2 shadow-sm backdrop-blur-md">
-      <div className="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
-          disabled={!prev}
-          onClick={() => {
-            if (!prev) return;
-            props.onOpenChapter(toId(prev.id), formatChapterTitle(prev));
-          }}
-        >
-          上一话{prev ? ` · ${formatChapterTitle(prev)}` : ""}
-        </button>
-        <button
-          type="button"
-          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
-          disabled={!next}
-          onClick={() => {
-            if (!next) return;
-            props.onOpenChapter(toId(next.id), formatChapterTitle(next));
-          }}
-        >
-          下一话{next ? ` · ${formatChapterTitle(next)}` : ""}
-        </button>
-      </div>
-    </div>
-  );
-});
-
 const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   imagesLength: number;
   imgBase: string;
@@ -1399,6 +1358,9 @@ export default function ReadingPage(props: {
         <ReadingPageMenu
           visible={headerVisible}
           chapterTitle={props.chapterTitle}
+          chapters={props.chapters}
+          chapterId={props.chapterId}
+          onOpenChapter={props.onOpenChapter}
           localFavBusy={localFavBusy}
           isLocalFav={isLocalFav}
           onToggleLocalFav={handleToggleLocalFav}
@@ -1484,11 +1446,6 @@ export default function ReadingPage(props: {
           </div>
         ) : null}
 
-        <ChapterNavBar
-          chapters={props.chapters}
-          chapterId={props.chapterId}
-          onOpenChapter={props.onOpenChapter}
-        />
       </div>
     </ReadingPullContainer>
   );

@@ -1,8 +1,64 @@
 import { Bookmark, Home, ArrowLeft, X } from "lucide-react";
 
+type ChapterNavItem = { id: string | number; sort?: string | number; name?: string };
+
+function toId(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  return "";
+}
+
+function formatChapterTitle(c: ChapterNavItem): string {
+  return `第${c.sort ?? "?"}话${c.name ? `：${c.name}` : ""}`;
+}
+
+function ChapterNavBar(props: {
+  chapters: ChapterNavItem[];
+  chapterId: string;
+  onOpenChapter: (chapterId: string, chapterTitle: string) => void;
+}) {
+  if (props.chapters.length <= 1) return null;
+  const list = [...props.chapters].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
+  const currentId = props.chapterId;
+  const curIdx = list.findIndex((c) => toId(c.id) === currentId);
+  const prev = curIdx > 0 ? list[curIdx - 1] : null;
+  const next = curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null;
+  return (
+    <div className="mt-4 w-full">
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+          disabled={!prev}
+          onClick={() => {
+            if (!prev) return;
+            props.onOpenChapter(toId(prev.id), formatChapterTitle(prev));
+          }}
+        >
+          上一话{prev ? ` · ${formatChapterTitle(prev)}` : ""}
+        </button>
+        <button
+          type="button"
+          className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50"
+          disabled={!next}
+          onClick={() => {
+            if (!next) return;
+            props.onOpenChapter(toId(next.id), formatChapterTitle(next));
+          }}
+        >
+          下一话{next ? ` · ${formatChapterTitle(next)}` : ""}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type ReadingPageMenuProps = {
   visible: boolean;
   chapterTitle: string;
+  chapters: ChapterNavItem[];
+  chapterId: string;
+  onOpenChapter: (chapterId: string, chapterTitle: string) => void;
   localFavBusy: boolean;
   isLocalFav: boolean;
   onToggleLocalFav: () => void;
@@ -91,6 +147,11 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
               </button>
             </div>
           </div>
+          <ChapterNavBar
+            chapters={props.chapters}
+            chapterId={props.chapterId}
+            onOpenChapter={props.onOpenChapter}
+          />
           <div className="mt-3 hidden sm:block">
             <div className="text-sm text-zinc-700">
               当前漫画大小（局部）：{" "}
