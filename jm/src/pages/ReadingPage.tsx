@@ -73,6 +73,11 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
       props.stats.inFlight === 0 &&
       props.stats.errors === 0,
   );
+  useEffect(() => {
+    if (open && loadComplete) {
+      setOpen(false);
+    }
+  }, [open, loadComplete]);
   const infoTone = props.errorCount > 0 ? "text-red-200" : loadComplete ? "text-emerald-200" : "text-white";
   return (
     <div className="fixed right-4 top-10 z-40 flex flex-col items-end">
