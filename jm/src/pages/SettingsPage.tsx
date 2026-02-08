@@ -21,7 +21,7 @@ import {
   subscribeSettings,
 } from "../settings/userSettings";
 import { useToast } from "../components/Toast";
-import { Check, HelpCircle } from "lucide-react";
+import { Check, HelpCircle, Loader2, RefreshCw } from "lucide-react";
 
 type UpdateAssetInfo = {
   name: string;
@@ -46,6 +46,11 @@ type UpdateDownloadInfo = {
   name: string;
 };
 
+type ApiLatencyCell = {
+  text: string;
+  ok: boolean;
+};
+
 function buildChannelFromVersion(version: string) {
   const trimmed = version.trim();
   const plusIdx = trimmed.indexOf("+");
@@ -65,6 +70,10 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   const [proxyMsg, setProxyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [apiBase, setApiBase] = useState("");
   const [apiBaseList, setApiBaseList] = useState<string[]>([]);
+  const [apiLatency, setApiLatency] = useState<Record<string, ApiLatencyCell>>({});
+  const [apiLatencyLoading, setApiLatencyLoading] = useState(false);
+  const [apiDomainRefreshing, setApiDomainRefreshing] = useState(false);
+  const [apiBaseSwitching, setApiBaseSwitching] = useState<string | null>(null);
   const [cacheStats, setCacheStats] = useState<{
     totalBytes: number;
     totalFiles: number;
@@ -104,6 +113,77 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       setReadConcurrency(getReadMaxConcurrency());
     });
   }, []);
+
+  const refreshApiDomainList = useCallback(async () => {
+    setApiDomainRefreshing(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const list = await invoke<string[]>("api_api_domain_fetch");
+      const current = await invoke<string>("api_api_base_current");
+      setApiBase(current);
+      setApiBaseList(Array.isArray(list) ? list : []);
+      setApiLatency((prev) => {
+        const next: Record<string, ApiLatencyCell> = {};
+        for (const base of Array.isArray(list) ? list : []) {
+          const v = prev[base];
+          if (v) next[base] = v;
+        }
+        return next;
+      });
+      showToast({ ok: true, text: `已更新域名列表（${Array.isArray(list) ? list.length : 0}）` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast({ ok: false, text: `更新失败：${msg}` });
+    } finally {
+      setApiDomainRefreshing(false);
+    }
+  }, [showToast]);
+
+  const speedTestApiDomainList = useCallback(async () => {
+    if (!apiBaseList.length) return;
+    setApiLatencyLoading(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<Array<{ base: string; ms: number; ok: boolean; status?: number | null }>>(
+        "api_api_base_latency",
+      );
+      const next: Record<string, ApiLatencyCell> = {};
+      for (const item of result ?? []) {
+        if (!item?.base) continue;
+        if (item.ok) {
+          next[item.base] = { text: `${item.ms}ms`, ok: true };
+        } else if (item.status) {
+          next[item.base] = { text: `HTTP ${item.status}`, ok: false };
+        } else {
+          next[item.base] = { text: "失败", ok: false };
+        }
+      }
+      setApiLatency(next);
+    } catch {
+      setApiLatency({});
+    } finally {
+      setApiLatencyLoading(false);
+    }
+  }, [apiBaseList.length]);
+
+  const selectApiBase = useCallback(
+    async (base: string) => {
+      if (!base || base === apiBase) return;
+      setApiBaseSwitching(base);
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const selected = await invoke<string>("api_api_base_select", { base });
+        setApiBase(selected);
+        showToast({ ok: true, text: `已切换 API 域名：${selected}` });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        showToast({ ok: false, text: `切换失败：${msg}` });
+      } finally {
+        setApiBaseSwitching(null);
+      }
+    },
+    [apiBase, showToast],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -547,33 +627,90 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-        <div className="mb-3 text-sm font-medium text-zinc-900">API 域名</div>
-        {apiBaseList.length ? (
-          <div className="flex flex-col gap-2 text-sm">
-            {apiBaseList.map((base) => {
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="text-sm font-medium text-zinc-900">API 域名</div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-60"
+              disabled={apiDomainRefreshing}
+              onClick={() => void refreshApiDomainList()}
+            >
+              {apiDomainRefreshing ? (
+                <span className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  更新中...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <RefreshCw className="h-3 w-3" />
+                  更新列表
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-60"
+              disabled={apiLatencyLoading || apiDomainRefreshing || apiBaseList.length === 0}
+              onClick={() => void speedTestApiDomainList()}
+            >
+              {apiLatencyLoading ? (
+                <span className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  测速中...
+                </span>
+              ) : (
+                "测速"
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[1fr_90px] items-center gap-x-4 gap-y-2 text-xs">
+          <div className="text-zinc-600">域名</div>
+          <div className="text-center text-zinc-600">上次测速</div>
+          {apiBaseList.length ? (
+            apiBaseList.map((base) => {
               const active = apiBase && base === apiBase;
+              const latency = apiLatency[base];
+              const switching = apiBaseSwitching === base;
               return (
-                <div key={base} className="flex items-center gap-2">
-                  <div
-                    className={`flex-1 px-2 py-1 text-xs ${
+                <div key={base} className="contents">
+                  <button
+                    type="button"
+                    disabled={active || apiDomainRefreshing || apiBaseSwitching != null}
+                    onClick={() => void selectApiBase(base)}
+                    className={`flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-zinc-50 disabled:opacity-60 ${
                       active ? "text-emerald-600" : "text-zinc-700"
                     }`}
+                    title={base}
                   >
-                    {base}
+                    {active ? (
+                      <Check className="h-3 w-3 shrink-0" />
+                    ) : (
+                      <span className="h-3 w-3 shrink-0 rounded-full border border-zinc-300" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{base}</span>
+                    {switching ? <Loader2 className="h-3 w-3 shrink-0 animate-spin" /> : null}
+                    {active ? <span className="shrink-0 text-[10px]">当前</span> : null}
+                  </button>
+                  <div
+                    className={`text-center ${
+                      latency ? (latency.ok ? "text-zinc-600" : "text-red-600") : "text-zinc-400"
+                    }`}
+                    title={latency?.text ?? ""}
+                  >
+                    {latency?.text ?? "—"}
                   </div>
-                  {active ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
-                      <Check className="h-3 w-3" />
-                      当前
-                    </span>
-                  ) : null}
                 </div>
               );
-            })}
-          </div>
-        ) : (
-          <div className="text-xs text-zinc-500">暂无可用域名</div>
-        )}
+            })
+          ) : (
+            <div className="col-span-2 text-center text-xs text-zinc-500">暂无可用域名</div>
+          )}
+        </div>
+
+        <div className="mt-2 text-xs text-zinc-500">选择后作为优先域名；请求失败时仍会自动切换。</div>
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">

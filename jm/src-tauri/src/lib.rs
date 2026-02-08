@@ -58,6 +58,8 @@ struct AppConfig {
     #[serde(default)]
     api_base_list: Vec<String>,
     #[serde(default)]
+    api_base_selected: Option<String>,
+    #[serde(default)]
     session_cookies: HashMap<String, String>,
 }
 
@@ -1570,7 +1572,17 @@ fn load_api_base_list() -> Vec<String> {
 }
 
 fn api_bases_state() -> &'static Mutex<Vec<String>> {
-    JM_API_BASES.get_or_init(|| Mutex::new(load_api_base_list()))
+    JM_API_BASES.get_or_init(|| {
+        let list = load_api_base_list();
+        if let Ok(cfg) = config_state().lock() {
+            if let Some(sel) = &cfg.api_base_selected {
+                if let Some(idx) = list.iter().position(|b| b == sel) {
+                    JM_API_BASE_INDEX.store(idx, Ordering::Relaxed);
+                }
+            }
+        }
+        Mutex::new(list)
+    })
 }
 
 fn get_api_bases() -> Vec<String> {
@@ -1584,9 +1596,22 @@ fn set_api_bases(list: Vec<String>) {
     if list.is_empty() {
         return;
     }
+
+    let selected = config_state()
+        .lock()
+        .ok()
+        .and_then(|c| c.api_base_selected.clone());
+    let prev = current_api_base();
+    let mut next_idx = 0usize;
+    if let Some(target) = selected.as_ref().or(prev.as_ref()) {
+        if let Some(pos) = list.iter().position(|b| b == target) {
+            next_idx = pos;
+        }
+    }
+
     if let Ok(mut bases) = api_bases_state().lock() {
         *bases = list;
-        JM_API_BASE_INDEX.store(0, Ordering::Relaxed);
+        JM_API_BASE_INDEX.store(next_idx, Ordering::Relaxed);
     }
 }
 
@@ -1666,6 +1691,28 @@ fn api_api_base_current() -> Result<String, String> {
 #[tauri::command]
 fn api_api_base_list() -> Result<Vec<String>, String> {
     Ok(get_api_bases())
+}
+
+#[tauri::command]
+fn api_api_base_select(base: String) -> Result<String, String> {
+    let normalized =
+        normalize_api_base_root(&base).ok_or_else(|| "invalid api base".to_string())?;
+    let bases = get_api_bases();
+    let idx = bases
+        .iter()
+        .position(|b| b == &normalized)
+        .ok_or_else(|| format!("api base not found: {normalized}"))?;
+
+    {
+        let mut cfg = config_state()
+            .lock()
+            .map_err(|_| "config lock poisoned".to_string())?;
+        cfg.api_base_selected = Some(normalized.clone());
+        save_config_to_disk(&cfg)?;
+    }
+
+    JM_API_BASE_INDEX.store(idx, Ordering::Relaxed);
+    Ok(normalized)
 }
 
 #[tauri::command]
@@ -4248,6 +4295,7 @@ pub fn run() {
             api_verify_mail,
             api_api_base_current,
             api_api_base_list,
+            api_api_base_select,
             api_api_base_latency,
             api_api_domain_fetch,
             api_category_search,
