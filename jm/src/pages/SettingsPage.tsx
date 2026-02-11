@@ -46,10 +46,19 @@ type UpdateDownloadInfo = {
   name: string;
 };
 
+type UpdateDownloadProgressEvent = {
+  url: string;
+  downloadedBytes: number;
+  totalBytes?: number | null;
+  percent?: number | null;
+};
+
 type ApiLatencyCell = {
   text: string;
   ok: boolean;
 };
+
+const UPDATE_DOWNLOAD_PROGRESS_EVENT = "app-update-download-progress";
 
 function buildChannelFromVersion(version: string) {
   const trimmed = version.trim();
@@ -88,11 +97,13 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   const [updateError, setUpdateError] = useState("");
   const [updateLoading, setUpdateLoading] = useState(false);
   const [updateDownloading, setUpdateDownloading] = useState(false);
+  const [updateDownloadProgress, setUpdateDownloadProgress] = useState<number | null>(null);
   const [cacheError, setCacheError] = useState("");
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const [cacheCleaning, setCacheCleaning] = useState(false);
   const [cacheTipOpen, setCacheTipOpen] = useState(false);
   const cacheTipRef = useRef<HTMLDivElement | null>(null);
+  const updateDownloadUrlRef = useRef("");
 
   const formatBytes = (bytes: number) => {
     if (!Number.isFinite(bytes)) return "0 B";
@@ -262,6 +273,52 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
 
   useEffect(() => {
     let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const off = await listen<UpdateDownloadProgressEvent>(
+          UPDATE_DOWNLOAD_PROGRESS_EVENT,
+          (event) => {
+            const payload = event.payload;
+            if (!payload) return;
+            if (updateDownloadUrlRef.current && payload.url !== updateDownloadUrlRef.current) return;
+            if (typeof payload.percent === "number") {
+              const pct = Math.max(0, Math.min(100, Math.round(payload.percent)));
+              setUpdateDownloadProgress(pct);
+              return;
+            }
+            if (
+              typeof payload.totalBytes === "number" &&
+              payload.totalBytes > 0 &&
+              typeof payload.downloadedBytes === "number"
+            ) {
+              const pct = Math.max(
+                0,
+                Math.min(100, Math.round((payload.downloadedBytes / payload.totalBytes) * 100)),
+              );
+              setUpdateDownloadProgress(pct);
+            }
+          },
+        );
+        if (cancelled) {
+          off();
+          return;
+        }
+        unlisten = off;
+      } catch {
+        // ignore event registration failure
+      }
+    };
+    void setup();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const run = async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -351,6 +408,8 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       showToast({ ok: false, text: "暂无可用更新包" });
       return;
     }
+    updateDownloadUrlRef.current = updateInfo.asset.url;
+    setUpdateDownloadProgress(0);
     setUpdateDownloading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -358,13 +417,16 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         url: updateInfo.asset.url,
         name: updateInfo.asset.name,
       });
+      setUpdateDownloadProgress(100);
       showToast({ ok: true, text: `已下载：${res.path}` });
       await openPath(res.path);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       showToast({ ok: false, text: `更新失败：${msg}` });
+      setUpdateDownloadProgress(null);
     } finally {
       setUpdateDownloading(false);
+      updateDownloadUrlRef.current = "";
     }
   }, [showToast, updateInfo?.asset?.name, updateInfo?.asset?.url]);
 
@@ -801,7 +863,18 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
               </div>
               {updateLoading ? <div className="mt-1 text-xs text-zinc-500">正在检查...</div> : null}
               {updateDownloading ? (
-                <div className="mt-1 text-xs text-zinc-500">正在下载...</div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  正在下载...
+                  {typeof updateDownloadProgress === "number" ? ` ${updateDownloadProgress}%` : ""}
+                </div>
+              ) : null}
+              {updateDownloading && typeof updateDownloadProgress === "number" ? (
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-zinc-200">
+                  <div
+                    className="h-full rounded bg-emerald-500 transition-all"
+                    style={{ width: `${Math.max(0, Math.min(100, updateDownloadProgress))}%` }}
+                  />
+                </div>
               ) : null}
               {updateError ? (
                 <div className="mt-1 text-xs text-red-600">检查失败：{updateError}</div>

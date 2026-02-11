@@ -13,6 +13,7 @@ use cipher::{block_padding::NoPadding, BlockDecryptMut, KeyInit};
 use image::ImageFormat;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use tauri::Manager;
 
 static LOG_WRITER: OnceLock<Mutex<std::io::BufWriter<std::fs::File>>> = OnceLock::new();
@@ -115,6 +116,17 @@ struct UpdateDownloadInfo {
     path: String,
     name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgressEvent {
+    url: String,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    percent: Option<u8>,
+}
+
+const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "app-update-download-progress";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1146,6 +1158,7 @@ async fn app_update_download(
     if !trimmed.starts_with("https://github.com/alexsunxl/jm-tauri/releases/download/") {
         return Err("unsupported download url".to_string());
     }
+    let download_url = trimmed.to_string();
 
     let raw_name = name
         .and_then(|n| {
@@ -1176,15 +1189,64 @@ async fn app_update_download(
     if !status.is_success() {
         return Err(format!("download http status {}", status.as_u16()));
     }
+    let total_bytes = resp.content_length();
+
+    let _ = app.emit(
+        UPDATE_DOWNLOAD_PROGRESS_EVENT,
+        UpdateDownloadProgressEvent {
+            url: download_url.clone(),
+            downloaded_bytes: 0,
+            total_bytes,
+            percent: Some(0),
+        },
+    );
 
     let mut file = std::fs::File::create(&dest).map_err(|e| format!("create file failed: {e}"))?;
+    let mut downloaded_bytes: u64 = 0;
+    let mut last_percent: Option<u8> = Some(0);
+    let mut last_emit_at = Instant::now();
+
     while let Some(chunk) = resp
         .chunk()
         .await
         .map_err(|e| format!("read update chunk failed: {e}"))?
     {
         file.write_all(&chunk).map_err(|e| format!("write update failed: {e}"))?;
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+
+        let percent = total_bytes.and_then(|total| {
+            if total > 0 {
+                Some(((downloaded_bytes.saturating_mul(100) / total).min(100)) as u8)
+            } else {
+                None
+            }
+        });
+
+        let should_emit = percent != last_percent || last_emit_at.elapsed() >= Duration::from_millis(150);
+        if should_emit {
+            let _ = app.emit(
+                UPDATE_DOWNLOAD_PROGRESS_EVENT,
+                UpdateDownloadProgressEvent {
+                    url: download_url.clone(),
+                    downloaded_bytes,
+                    total_bytes,
+                    percent,
+                },
+            );
+            last_percent = percent;
+            last_emit_at = Instant::now();
+        }
     }
+
+    let _ = app.emit(
+        UPDATE_DOWNLOAD_PROGRESS_EVENT,
+        UpdateDownloadProgressEvent {
+            url: download_url,
+            downloaded_bytes,
+            total_bytes,
+            percent: Some(100),
+        },
+    );
 
     Ok(UpdateDownloadInfo {
         path: dest.to_string_lossy().to_string(),

@@ -32,6 +32,8 @@ type FollowStateEntry = {
   updatedAt: number;
 };
 
+type LocalFavoritesSort = "lastRead" | "addedAt";
+
 export default function LocalFavoritesPage(props: {
   session: Session;
   onOpenComic: (aid: string) => void;
@@ -44,6 +46,8 @@ export default function LocalFavoritesPage(props: {
   ) => void;
 }) {
   const viewKey = "jm_view_local_favorites";
+  const typeFilterKey = "jm_type_local_favorites";
+  const sortKey = "jm_sort_local_favorites";
   const [viewMode, setViewMode] = useState<"list" | "card">(() => {
     try {
       const v = localStorage.getItem(viewKey);
@@ -62,7 +66,23 @@ export default function LocalFavoritesPage(props: {
   const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "single" | "multi">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "single" | "multi">(() => {
+    try {
+      const v = localStorage.getItem(typeFilterKey);
+      if (v === "single" || v === "multi") return v;
+      return "all";
+    } catch {
+      return "all";
+    }
+  });
+  const [sortMode, setSortMode] = useState<LocalFavoritesSort>(() => {
+    try {
+      const v = localStorage.getItem(sortKey);
+      return v === "addedAt" ? "addedAt" : "lastRead";
+    } catch {
+      return "lastRead";
+    }
+  });
   const { showToast } = useToast();
 
   const load = async (kind = typeFilter) => {
@@ -118,6 +138,22 @@ export default function LocalFavoritesPage(props: {
       // ignore
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(typeFilterKey, typeFilter);
+    } catch {
+      // ignore
+    }
+  }, [typeFilter]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(sortKey, sortMode);
+    } catch {
+      // ignore
+    }
+  }, [sortMode]);
 
   const remove = async (aid: string) => {
     setError("");
@@ -196,15 +232,28 @@ export default function LocalFavoritesPage(props: {
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((x) => {
-      return (
-        x.aid.toLowerCase().includes(q) ||
-        x.title.toLowerCase().includes(q) ||
-        x.author.toLowerCase().includes(q)
-      );
+    const filtered = !q
+      ? items
+      : items.filter((x) => {
+          return (
+            x.aid.toLowerCase().includes(q) ||
+            x.title.toLowerCase().includes(q) ||
+            x.author.toLowerCase().includes(q)
+          );
+        });
+    const sorted = [...filtered].sort((a, b) => {
+      if (sortMode === "addedAt") {
+        if (b.addedAt !== a.addedAt) return b.addedAt - a.addedAt;
+        return b.updatedAt - a.updatedAt;
+      }
+      const aRead = Number(getReadProgress(a.aid)?.updatedAt ?? 0);
+      const bRead = Number(getReadProgress(b.aid)?.updatedAt ?? 0);
+      if (bRead !== aRead) return bRead - aRead;
+      if (b.addedAt !== a.addedAt) return b.addedAt - a.addedAt;
+      return b.updatedAt - a.updatedAt;
     });
-  }, [filter, items]);
+    return sorted;
+  }, [filter, items, sortMode]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -220,8 +269,8 @@ export default function LocalFavoritesPage(props: {
           <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
             {(
               [
-                { key: "all", label: "全部" },
-                { key: "single", label: "单本" },
+                { key: "all", label: "全选" },
+                { key: "single", label: "单话" },
                 { key: "multi", label: "多话" },
               ] as const
             ).map((opt) => {
@@ -234,6 +283,29 @@ export default function LocalFavoritesPage(props: {
                     active ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-50"
                   }`}
                   onClick={() => setTypeFilter(opt.key)}
+                  aria-pressed={active}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
+            {(
+              [
+                { key: "lastRead", label: "最后阅读时间" },
+                { key: "addedAt", label: "收藏时间" },
+              ] as const
+            ).map((opt) => {
+              const active = sortMode === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className={`h-8 rounded-sm px-3 text-sm ${
+                    active ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-50"
+                  }`}
+                  onClick={() => setSortMode(opt.key)}
                   aria-pressed={active}
                 >
                   {opt.label}
