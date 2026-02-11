@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
 
-static LOG_WRITER: OnceLock<Mutex<std::io::BufWriter<std::fs::File>>> = OnceLock::new();
+static LOG_WRITER: OnceLock<Mutex<LogWriter>> = OnceLock::new();
 static LOG_LINE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 static APP_CONFIG: OnceLock<Mutex<AppConfig>> = OnceLock::new();
 static COVER_SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 static REGISTER_COOKIE_JAR: OnceLock<Arc<reqwest::cookie::Jar>> = OnceLock::new();
@@ -41,13 +42,49 @@ const JM_APP_DATA_SECRET_DEFAULT: &str = "185Hcomic3PAPP7R";
 const JM_APP_TOKEN_SECRET_DEFAULT: &str = "18comicAPP";
 const JM_APP_TOKEN_SECRET_2_DEFAULT: &str = "18comicAPPContent";
 const JM_API_DOMAIN_SERVER_SECRET: &str = "diosfjckwpqpdfjkvnqQjsik";
+const LOG_ROTATE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const LOG_ROTATE_FILES: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Debug => "DEBUG",
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+struct LogWriter {
+    path: std::path::PathBuf,
+    writer: std::io::BufWriter<std::fs::File>,
+    rotate_enabled: bool,
+}
 
 macro_rules! logl {
     () => {
-        log_line(file!(), line!(), format_args!(""));
+        log_line(LogLevel::Info, file!(), line!(), format_args!(""));
     };
     ($($arg:tt)+) => {
-        log_line(file!(), line!(), format_args!($($arg)+));
+        log_line(LogLevel::Info, file!(), line!(), format_args!($($arg)+));
+    };
+}
+
+macro_rules! logd {
+    () => {
+        log_line(LogLevel::Debug, file!(), line!(), format_args!(""));
+    };
+    ($($arg:tt)+) => {
+        log_line(LogLevel::Debug, file!(), line!(), format_args!($($arg)+));
     };
 }
 
@@ -423,7 +460,74 @@ fn log_file_path() -> std::path::PathBuf {
     primary
 }
 
-fn get_log_writer() -> Option<&'static Mutex<std::io::BufWriter<std::fs::File>>> {
+fn parse_log_level(raw: &str) -> Option<LogLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "debug" => Some(LogLevel::Debug),
+        "info" => Some(LogLevel::Info),
+        "warn" | "warning" => Some(LogLevel::Warn),
+        "error" => Some(LogLevel::Error),
+        _ => None,
+    }
+}
+
+fn current_log_level() -> LogLevel {
+    *LOG_LEVEL.get_or_init(|| {
+        if let Ok(v) = std::env::var("JM_LOG_LEVEL") {
+            if let Some(lv) = parse_log_level(&v) {
+                return lv;
+            }
+        }
+        if cfg!(debug_assertions) {
+            LogLevel::Debug
+        } else {
+            LogLevel::Info
+        }
+    })
+}
+
+fn log_rotated_path(base: &std::path::Path, idx: usize) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}.{}", base.to_string_lossy(), idx))
+}
+
+fn rotate_log_files(base: &std::path::Path) -> std::io::Result<()> {
+    for idx in (1..LOG_ROTATE_FILES).rev() {
+        let src = if idx == 1 {
+            base.to_path_buf()
+        } else {
+            log_rotated_path(base, idx - 1)
+        };
+        if !src.exists() {
+            continue;
+        }
+        let dst = log_rotated_path(base, idx);
+        let _ = std::fs::remove_file(&dst);
+        std::fs::rename(&src, &dst)?;
+    }
+    Ok(())
+}
+
+fn maybe_rotate_log_writer(log: &mut LogWriter) -> std::io::Result<()> {
+    if !log.rotate_enabled {
+        return Ok(());
+    }
+    let size = log.writer.get_ref().metadata()?.len();
+    if size < LOG_ROTATE_MAX_BYTES {
+        return Ok(());
+    }
+
+    log.writer.flush()?;
+    rotate_log_files(&log.path)?;
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log.path)?;
+    log.writer = std::io::BufWriter::new(file);
+    Ok(())
+}
+
+fn get_log_writer() -> Option<&'static Mutex<LogWriter>> {
     LOG_WRITER.get_or_init(|| {
         let primary = log_file_path();
 
@@ -438,12 +542,14 @@ fn get_log_writer() -> Option<&'static Mutex<std::io::BufWriter<std::fs::File>>>
             Ok(std::io::BufWriter::new(file))
         };
 
-        let writer = try_open(&primary).or_else(|_| {
-            let fallback = std::env::temp_dir().join("jmcomic-logs").join("jm.log");
-            try_open(&fallback)
-        });
+        let opened = try_open(&primary)
+            .map(|w| (primary.clone(), w))
+            .or_else(|_| {
+                let fallback = std::env::temp_dir().join("jmcomic-logs").join("jm.log");
+                try_open(&fallback).map(|w| (fallback, w))
+            });
 
-        Mutex::new(writer.unwrap_or_else(|_| {
+        Mutex::new(opened.map_or_else(|_| {
             // Last resort: /dev/null style sink, so logging doesn't panic.
             let file = if cfg!(windows) {
                 std::fs::OpenOptions::new()
@@ -456,7 +562,17 @@ fn get_log_writer() -> Option<&'static Mutex<std::io::BufWriter<std::fs::File>>>
                     .open("/dev/null")
                     .unwrap_or_else(|_| std::fs::File::create(std::env::temp_dir().join("jm.log")).unwrap())
             };
-            std::io::BufWriter::new(file)
+            LogWriter {
+                path: std::path::PathBuf::new(),
+                writer: std::io::BufWriter::new(file),
+                rotate_enabled: false,
+            }
+        }, |(path, w)| {
+            LogWriter {
+                path,
+                writer: w,
+                rotate_enabled: true,
+            }
         }))
     });
     Some(LOG_WRITER.get().expect("just initialized"))
@@ -1010,13 +1126,15 @@ fn normalize_verify_url(input: &str, base_override: Option<String>) -> String {
     trimmed.to_string()
 }
 
-fn log_line(file: &str, line: u32, msg: std::fmt::Arguments<'_>) {
-    // dev: print to console
-    if cfg!(debug_assertions) || std::env::var("JM_LOG_STDERR").ok().as_deref() == Some("1") {
-        eprintln!("{file}:{line} {msg}");
+fn log_line(level: LogLevel, file: &str, line: u32, msg: std::fmt::Arguments<'_>) {
+    if level < current_log_level() {
+        return;
     }
 
-    // release: always write to file (best-effort)
+    if cfg!(debug_assertions) || std::env::var("JM_LOG_STDERR").ok().as_deref() == Some("1") {
+        eprintln!("{} {file}:{line} {msg}", level.as_str());
+    }
+
     if cfg!(debug_assertions) {
         return;
     }
@@ -1027,12 +1145,13 @@ fn log_line(file: &str, line: u32, msg: std::fmt::Arguments<'_>) {
         .unwrap_or(0);
 
     if let Some(m) = get_log_writer() {
-        if let Ok(mut w) = m.lock() {
-            let _ = writeln!(w, "{now_ms} {file}:{line} {msg}");
+        if let Ok(mut log) = m.lock() {
+            let _ = writeln!(log.writer, "{now_ms} {} {file}:{line} {msg}", level.as_str());
             // Reduce overhead: flush every 50 lines.
             let n = LOG_LINE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 50 == 0 {
-                let _ = w.flush();
+                let _ = log.writer.flush();
+                let _ = maybe_rotate_log_writer(&mut log);
             }
         }
     }
@@ -3638,7 +3757,7 @@ fn descramble_image_bytes_with_cancel(
             .map_err(|e| format!("encode image failed: {e}"))?;
     }
 
-    logl!(
+    logd!(
         "[tauri][img] descramble done num={} fmt_in={:?} fmt_out={:?} in={}B out={}B cost_ms={}",
         num,
         fmt_in,
@@ -3944,7 +4063,7 @@ async fn api_read_cancel(
 #[tauri::command]
 async fn api_image_descramble(url: String, num: i64) -> Result<ImagePayload, String> {
     let started = Instant::now();
-    logl!("[tauri][img] start url={:?} num={}", url, num);
+    logd!("[tauri][img] start url={:?} num={}", url, num);
 
     let client = http_client()?;
     let resp = client
@@ -3956,7 +4075,7 @@ async fn api_image_descramble(url: String, num: i64) -> Result<ImagePayload, Str
 
     let status = resp.status();
     if !status.is_success() {
-        logl!(
+        logd!(
             "[tauri][img] http_error status={} url={:?} cost_ms={}",
             status,
             url,
@@ -3974,7 +4093,7 @@ async fn api_image_descramble(url: String, num: i64) -> Result<ImagePayload, Str
     let mime = mime_from_format(fmt).to_string();
     let data_b64 = base64::engine::general_purpose::STANDARD.encode(out);
 
-    logl!(
+    logd!(
         "[tauri][img] ok url={:?} num={} mime={} b64_len={} cost_ms={}",
         url,
         num,
@@ -3996,7 +4115,7 @@ async fn api_image_descramble_file(
 ) -> Result<String, String> {
     let started = Instant::now();
     let num = if num <= 1 { 1 } else { num };
-    logl!(
+    logd!(
         "[tauri][imgfile] start url={:?} num={} read_key={:?}",
         url, num, read_key
     );
@@ -4004,7 +4123,7 @@ async fn api_image_descramble_file(
     let token = read_key.as_deref().map(|k| registry.token_for(k));
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {
-            logl!(
+            logd!(
                 "[tauri][imgfile] cancelled(before) url={:?} num={} read_key={:?} cost_ms={}",
                 url,
                 num,
@@ -4025,7 +4144,7 @@ async fn api_image_descramble_file(
     let key = md5_hex(&format!("{url}|{num}"));
     let cached_png = out_dir.join(format!("{key}.png"));
     if cached_png.exists() {
-        logl!(
+        logd!(
             "[tauri][imgfile] hit num={} out={:?} read_key={:?} cost_ms={}",
             num,
             cached_png,
@@ -4036,7 +4155,7 @@ async fn api_image_descramble_file(
     }
     let cached_jpg = out_dir.join(format!("{key}.jpg"));
     if cached_jpg.exists() {
-        logl!(
+        logd!(
             "[tauri][imgfile] hit num={} out={:?} read_key={:?} cost_ms={}",
             num,
             cached_jpg,
@@ -4056,7 +4175,7 @@ async fn api_image_descramble_file(
 
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {
-            logl!(
+            logd!(
                 "[tauri][imgfile] cancelled(after_http) url={:?} num={} read_key={:?} cost_ms={}",
                 url,
                 num,
@@ -4069,7 +4188,7 @@ async fn api_image_descramble_file(
 
     let status = resp.status();
     if !status.is_success() {
-        logl!(
+        logd!(
             "[tauri][imgfile] http_error status={} url={:?} cost_ms={}",
             status,
             url,
@@ -4085,7 +4204,7 @@ async fn api_image_descramble_file(
 
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {
-            logl!(
+            logd!(
                 "[tauri][imgfile] cancelled(after_body) url={:?} num={} read_key={:?} cost_ms={}",
                 url,
                 num,
@@ -4099,7 +4218,7 @@ async fn api_image_descramble_file(
     let (out, fmt) = match descramble_image_bytes_with_cancel(&bytes, num, token.as_deref()) {
         Ok(v) => v,
         Err(e) if e == "cancelled" => {
-            logl!(
+            logd!(
                 "[tauri][imgfile] cancelled(descramble) url={:?} num={} read_key={:?} cost_ms={}",
                 url,
                 num,
@@ -4121,7 +4240,7 @@ async fn api_image_descramble_file(
         std::fs::write(&out_path, &out).map_err(|e| format!("write file failed: {e}"))?;
     }
 
-    logl!(
+    logd!(
         "[tauri][imgfile] ok num={} out={:?} out_bytes={} read_key={:?} cost_ms={}",
         num,
         out_path,

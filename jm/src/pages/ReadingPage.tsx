@@ -1325,7 +1325,6 @@ export default function ReadingPage(props: {
   }, []);
 
   const triggerMenu = useCallback(() => {
-    console.log("[read][menu] trigger");
     setHeaderVisible((v) => !v);
     // 自动关闭先不要
     // if (hideHeaderTimer.current) window.clearTimeout(hideHeaderTimer.current);
