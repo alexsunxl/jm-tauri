@@ -230,7 +230,6 @@ export default function SearchPage(props: {
                 setHistoryOpen(true);
               }}
               onChange={(e) => {
-                if (composingRef.current) return;
                 const next = e.currentTarget.value;
                 setQueryInput(next);
                 setHistoryFilter(next);
@@ -244,8 +243,15 @@ export default function SearchPage(props: {
                 setQueryInput(next);
                 setHistoryFilter(next);
               }}
-              onKeyUp={(e) => {
-                if (e.key === "Enter" && !composingRef.current) void runSearch(1);
+              onBlur={() => {
+                // Some Windows IME paths may miss compositionend on blur.
+                composingRef.current = false;
+              }}
+              onKeyDown={(e) => {
+                const native = e.nativeEvent as KeyboardEvent;
+                if (e.key === "Enter" && !composingRef.current && !native.isComposing) {
+                  void runSearch(1);
+                }
               }}
             />
             {historyOpen ? (
