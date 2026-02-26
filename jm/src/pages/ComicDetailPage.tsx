@@ -578,7 +578,7 @@ export default function ComicDetailPage(props: {
   ]);
 
   return (
-    <div className="min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6">
+    <div className="safe-area-top safe-area-bottom min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6">
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex max-w-[520px] min-w-0 flex-col">

@@ -144,7 +144,7 @@ function HomeLayout(props: {
   const user = props.session.user;
 
   return (
-    <div className="min-h-screen bg-zinc-100 p-4 pb-20 text-zinc-900 sm:p-6 md:pb-6">
+    <div className="safe-area-top min-h-screen bg-zinc-100 p-4 pb-20 text-zinc-900 sm:p-6 md:pb-6">
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <div className="hidden md:flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col">

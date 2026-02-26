@@ -4391,6 +4391,7 @@ async fn api_favorite_folder_move(
 pub fn run() {
     tauri::Builder::default()
         .manage(CancelRegistry::default())
+        .plugin(tauri_plugin_edge_to_edge::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if cfg!(target_os = "android") {

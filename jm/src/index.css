@@ -1,3 +1,25 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-top: var(--safe-area-inset-top);
+  --safe-area-bottom: var(--safe-area-inset-bottom);
+  --safe-area-bottom-computed: var(--safe-area-bottom);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+.safe-area-top {
+  padding-top: var(--safe-area-top);
+}
+
+.safe-area-bottom {
+  padding-bottom: var(--safe-area-bottom-computed, var(--safe-area-bottom));
+}

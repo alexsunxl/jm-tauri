@@ -1954,6 +1954,7 @@ dependencies = [
  "sled",
  "tauri",
  "tauri-build",
+ "tauri-plugin-edge-to-edge",
  "tauri-plugin-opener",
  "tokio",
  "urlencoding",
@@ -4167,6 +4168,18 @@ dependencies = [
  "tauri-utils",
  "toml 0.9.9+spec-1.0.0",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-edge-to-edge"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80ca12cf0907cf15d9a26aecf8b4f99da21339e3e2e716593f95cd0fb8050a55"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

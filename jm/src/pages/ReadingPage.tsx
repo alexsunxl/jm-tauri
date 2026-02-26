@@ -1336,7 +1336,7 @@ export default function ReadingPage(props: {
   return (
     <ReadingPullContainer
       rootRef={rootRef}
-      className="min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6"
+      className="safe-area-top safe-area-bottom min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6"
       loading={loading}
       onRefresh={loadChapter}
       canPullUp={Boolean(nextChapter)}
