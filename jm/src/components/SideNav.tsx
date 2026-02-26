@@ -52,7 +52,7 @@ export default function SideNav(props: {
       { key: "settings" as const, label: "设置", Icon: Settings, to: "/home/settings" },
     ];
     return (
-      <div className="safe-area-bottom fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-200 bg-white/95 backdrop-blur">
+      <div className="mobile-bottom-nav fixed left-0 right-0 z-30 border-t border-zinc-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex w-full max-w-[900px] items-stretch">
           {bottomItems.map(({ key, label, Icon, to }) =>
             key === "read" ? (

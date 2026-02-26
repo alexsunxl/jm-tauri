@@ -1031,7 +1031,7 @@ export default function LoginPage(props: { onLoggedIn: (session: Session) => voi
   }, [active, props.onLoggedIn]);
 
   return (
-    <div className="safe-area-top safe-area-bottom flex min-h-screen items-center justify-center bg-zinc-100 p-4 text-zinc-900 sm:p-6">
+    <div className="safe-area-top flex min-h-screen items-center justify-center bg-zinc-100 p-4 text-zinc-900 sm:p-6">
       <div className="flex min-h-[360px] w-full min-w-0 max-w-[500px] flex-col rounded-lg border border-zinc-200 bg-white shadow-sm">
         <div className="px-[6px] pt-[6px]">
           <div className="flex border-b border-zinc-200">

@@ -7,7 +7,6 @@
   --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-top: var(--safe-area-inset-top);
   --safe-area-bottom: var(--safe-area-inset-bottom);
-  --safe-area-bottom-computed: var(--safe-area-bottom);
 }
 
 html,
@@ -22,4 +21,18 @@ body,
 
 .safe-area-bottom {
   padding-bottom: var(--safe-area-bottom-computed, var(--safe-area-bottom));
+}
+
+.home-mobile-safe-bottom {
+  padding-bottom: calc(5rem + var(--safe-area-bottom-computed, var(--safe-area-bottom, 0px)));
+}
+
+.mobile-bottom-nav {
+  bottom: var(--safe-area-bottom-computed, var(--safe-area-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .home-mobile-safe-bottom {
+    padding-bottom: 1.5rem;
+  }
 }
