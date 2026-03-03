@@ -36,6 +36,8 @@ type ReadingSchedulerProps = {
   aid: string;
   startPage?: number;
   currentPage: number;
+  visibleStart: number;
+  visibleEnd: number;
   images: ReadImage[];
   segmentNums: number[] | null;
   processedRef: Ref<ProcessedMap>;
@@ -136,6 +138,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
   const pumpFnRef = useRef<(() => void) | null>(null);
   const imagesRef = useRef<ReadImage[]>(props.images);
   const segmentNumsRef = useRef<number[] | null>(props.segmentNums);
+  const rampLimitRef = useRef(1);
+  const additiveCounterRef = useRef(0);
 
   useEffect(() => {
     imagesRef.current = props.images;
@@ -173,6 +177,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     clearPump();
     imagesRef.current = [];
     segmentNumsRef.current = null;
+    rampLimitRef.current = 1;
+    additiveCounterRef.current = 0;
     emitInflight();
   }, [props.resetToken, clearPump, emitInflight]);
 
@@ -196,9 +202,48 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     }, 0);
   }, [props.leavingRef]);
 
+  const clampRampLimit = useCallback(() => {
+    const configuredMax = Math.max(1, props.maxConcurrencyRef.current);
+    if (rampLimitRef.current > configuredMax) {
+      rampLimitRef.current = configuredMax;
+    }
+    if (rampLimitRef.current < 1) {
+      rampLimitRef.current = 1;
+    }
+    return configuredMax;
+  }, [props.maxConcurrencyRef]);
+
+  const increaseRampLimit = useCallback(() => {
+    const configuredMax = clampRampLimit();
+    const prev = rampLimitRef.current;
+    if (prev >= configuredMax) return false;
+    const threshold = Math.min(configuredMax, 4);
+    if (prev < threshold) {
+      rampLimitRef.current = Math.min(configuredMax, Math.max(1, prev * 2));
+      additiveCounterRef.current = 0;
+      return rampLimitRef.current !== prev;
+    }
+
+    additiveCounterRef.current += 1;
+    if (additiveCounterRef.current >= prev) {
+      rampLimitRef.current = Math.min(configuredMax, prev + 1);
+      additiveCounterRef.current = 0;
+    }
+    return rampLimitRef.current !== prev;
+  }, [clampRampLimit]);
+
+  const decreaseRampLimit = useCallback(() => {
+    const configuredMax = clampRampLimit();
+    const prev = rampLimitRef.current;
+    rampLimitRef.current = Math.max(1, Math.min(configuredMax, Math.floor(prev / 2)));
+    additiveCounterRef.current = 0;
+    return rampLimitRef.current !== prev;
+  }, [clampRampLimit]);
+
   const pump = useCallback(async () => {
     if (props.leavingRef.current) return;
-    const maxConcurrency = props.maxConcurrencyRef.current;
+    const configuredMax = clampRampLimit();
+    const maxConcurrency = Math.max(1, Math.min(configuredMax, rampLimitRef.current));
 
     const currentSegs = segmentNumsRef.current;
     const currentImages = imagesRef.current;
@@ -217,6 +262,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     const gen = props.genRef.current;
     const available = maxConcurrency - inFlight.current.size;
     const startNow: number[] = [];
+    const visibleStart = Math.max(0, Math.min(total, props.visibleStart));
+    const visibleEnd = Math.max(visibleStart, Math.min(total, props.visibleEnd));
     const consider = (idx: number) => {
       if (startNow.length >= available) return;
       if (idx < 0 || idx >= total) return;
@@ -225,6 +272,9 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       if (inFlight.current.has(idx)) return;
       startNow.push(idx);
     };
+    for (let i = visibleStart; i < visibleEnd && startNow.length < available; i += 1) {
+      consider(i);
+    }
     for (let i = cur; i < total && startNow.length < available; i += 1) {
       consider(i);
     }
@@ -237,6 +287,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       inFlight.current.add(idx);
       emitInflight();
       (async () => {
+        let needBackoff = false;
+        let shouldRampUp = false;
         try {
           if (props.leavingRef.current) return;
           const segs = segmentNumsRef.current;
@@ -265,10 +317,12 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
             [idx]: { url: objectUrl, retries },
           };
           props.setProcessed((prev) => ({ ...prev, [idx]: { url: objectUrl, retries } }));
+          shouldRampUp = true;
         } catch (e) {
           if (gen !== props.genRef.current) return;
           const msg = e instanceof Error ? e.message : String(e);
           if (msg === "cancelled") return;
+          needBackoff = true;
           const retries = props.processedRef.current[idx]?.retries ?? 0;
           props.processedRef.current = {
             ...props.processedRef.current,
@@ -278,12 +332,22 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
         } finally {
           inFlight.current.delete(idx);
           emitInflight();
+          if (!props.leavingRef.current && gen === props.genRef.current) {
+            if (needBackoff) {
+              decreaseRampLimit();
+            } else if (shouldRampUp) {
+              increaseRampLimit();
+            }
+          }
           schedulePump();
         }
       })();
     }
   }, [
+    clampRampLimit,
+    decreaseRampLimit,
     emitInflight,
+    increaseRampLimit,
     props.aid,
     props.currentPage,
     props.genRef,
@@ -292,6 +356,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     props.objectUrlsByIndex,
     props.processedRef,
     props.readKeyRef,
+    props.visibleEnd,
+    props.visibleStart,
     props.setProcessed,
     props.startPage,
     schedulePump,
@@ -350,6 +416,7 @@ type ReadingImageListProps = {
   pageIndexRef: Ref<number | null>;
   onRetry: (index: number) => void;
   onPageChange: (page: number) => void;
+  onWindowChange: (start: number, end: number) => void;
 };
 
 const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListProps) {
@@ -377,6 +444,10 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
   useEffect(() => {
     props.onPageChange(currentPage);
   }, [currentPage, props.onPageChange]);
+
+  useEffect(() => {
+    props.onWindowChange(windowRange.start, windowRange.end);
+  }, [props.onWindowChange, windowRange.end, windowRange.start]);
 
   const handleMeasured = useCallback(
     (index: number, height: number) => {
@@ -1043,6 +1114,10 @@ export default function ReadingPage(props: {
     useInflightTracker();
   const [schedulerToken, setSchedulerToken] = useState(0);
   const [pumpToken, setPumpToken] = useState(0);
+  const [visibleWindow, setVisibleWindow] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: 0,
+  });
   const [headerVisible, setHeaderVisible] = useState(false);
   const hideHeaderTimer = useRef<number | null>(null);
   const [localFavBusy, setLocalFavBusy] = useState(false);
@@ -1098,6 +1173,9 @@ export default function ReadingPage(props: {
   const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
   const requestPump = useCallback(() => {
     setPumpToken((v) => v + 1);
+  }, []);
+  const handleWindowChange = useCallback((start: number, end: number) => {
+    setVisibleWindow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
   }, []);
   const { loadInfoStats, errorCount } = useLoadInfoStats(processed, inflightCount, segmentNums);
 
@@ -1215,6 +1293,7 @@ export default function ReadingPage(props: {
     genRef.current += 1;
     setProcessed({});
     setCurrentPage(1);
+    setVisibleWindow({ start: 0, end: 0 });
     setLocalScale(loadLocalImageScale(props.aid));
     resetInflight();
     setSchedulerToken((v) => v + 1);
@@ -1386,6 +1465,8 @@ export default function ReadingPage(props: {
           aid={props.aid}
           startPage={props.startPage}
           currentPage={currentPage}
+          visibleStart={visibleWindow.start}
+          visibleEnd={visibleWindow.end}
           images={images}
           segmentNums={segmentNums}
           processedRef={processedRef}
@@ -1442,6 +1523,7 @@ export default function ReadingPage(props: {
           pageIndexRef={pageIndexRef}
           onRetry={onRetry}
           onPageChange={handlePageChange}
+          onWindowChange={handleWindowChange}
         />
 
         {images.length > 0 ? (
