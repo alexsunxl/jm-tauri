@@ -95,3 +95,51 @@ test("local favorites filter/sort tabs persist in localStorage", async ({ page }
     .filter(Boolean);
   expect(calledKinds).toContain("multi");
 });
+
+test("local favorites multi tab can trigger latest chapter scan", async ({ page }) => {
+  await installTauriMock(page, {
+    favorites: [
+      {
+        aid: "30001",
+        title: "Gamma",
+        author: "G",
+        coverUrl: "",
+        addedAt: 100,
+        updatedAt: 100,
+        latestChapterSort: "33",
+      },
+      {
+        aid: "30002",
+        title: "Delta",
+        author: "D",
+        coverUrl: "",
+        addedAt: 90,
+        updatedAt: 90,
+        latestChapterSort: null,
+      },
+    ],
+  });
+
+  await page.goto("/#/home/local_favorites");
+
+  await expect(page.getByRole("button", { name: "扫描最新话", exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "多话", exact: true }).click();
+  const scanBtn = page.getByRole("button", { name: "扫描最新话", exact: true });
+  await expect(scanBtn).toBeVisible();
+
+  await scanBtn.click();
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        const scanCount = calls.filter((x) => x.cmd === "api_local_favorites_scan_latest").length;
+        const multiListCount = calls.filter(
+          (x) => x.cmd === "api_local_favorites_list" && x.args?.kind === "multi",
+        ).length;
+        return { scanCount, multiListCount };
+      }),
+    )
+    .toEqual({ scanCount: 1, multiListCount: 2 });
+});

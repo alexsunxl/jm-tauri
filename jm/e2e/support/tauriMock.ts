@@ -98,6 +98,15 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
             list,
           };
         }
+        case "api_local_favorites_scan_latest": {
+          return {
+            total: favorites.length,
+            scanned: favorites.length,
+            updated: favorites.filter((it) => Boolean(it.latestChapterSort)).length,
+            failed: 0,
+            forced: true,
+          };
+        }
         case "api_follow_state_list": {
           return followAids.map((aid) => ({
             aid,

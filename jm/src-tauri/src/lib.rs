@@ -250,6 +250,16 @@ struct LatestScanEntry {
     scanned_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LatestScanSummary {
+    total: u64,
+    scanned: u64,
+    updated: u64,
+    failed: u64,
+    forced: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ComicExtraEntry {
@@ -1985,11 +1995,22 @@ fn parse_series_latest(series: &[serde_json::Value]) -> Option<(String, Option<S
     Some((last.2, last.3))
 }
 
-async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
+async fn scan_latest_chapters_with_mode(
+    app: tauri::AppHandle,
+    force: bool,
+) -> Result<LatestScanSummary, String> {
     let store = app.state::<LocalFavoritesStore>();
     let tree = store.tree()?.clone();
     let latest_tree = read_latest_tree()?;
     let seen_tree = read_latest_seen_tree()?;
+
+    let mut summary = LatestScanSummary {
+        total: 0,
+        scanned: 0,
+        updated: 0,
+        failed: 0,
+        forced: force,
+    };
 
     for item in tree.iter() {
         let (_, val) = item.map_err(|e| format!("sled iter failed: {e}"))?;
@@ -1997,18 +2018,32 @@ async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
             bincode::deserialize(&val).map_err(|e| format!("decode favorite failed: {e}"))?;
         let aid = fav.aid.clone();
 
-        if seen_tree
-            .get(aid.as_bytes())
-            .map_err(|e| format!("read latest seen failed: {e}"))?
-            .is_some()
+        summary.total += 1;
+
+        if !force
+            && seen_tree
+                .get(aid.as_bytes())
+                .map_err(|e| format!("read latest seen failed: {e}"))?
+                .is_some()
         {
             continue;
         }
+
+        summary.scanned += 1;
+
+        let prev_latest = latest_tree
+            .get(aid.as_bytes())
+            .map_err(|e| format!("read latest failed: {e}"))?
+            .and_then(|bytes| serde_json::from_slice::<LatestChapterEntry>(&bytes).ok());
+        let prev_pair = prev_latest
+            .as_ref()
+            .map(|entry| (entry.latest_chapter_id.clone(), entry.latest_chapter_sort.clone()));
 
         let album = match api_album(aid.clone(), HashMap::new()).await {
             Ok(v) => v,
             Err(e) => {
                 logl!("[tauri][latest] album fetch failed aid={} err={}", aid, e);
+                summary.failed += 1;
                 continue;
             }
         };
@@ -2024,6 +2059,7 @@ async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
             .unwrap_or(0);
 
         if let Some((latest_id, latest_sort)) = parse_series_latest(&series) {
+            let next_pair = Some((latest_id.clone(), latest_sort.clone()));
             let latest_entry = LatestChapterEntry {
                 aid: aid.clone(),
                 latest_chapter_id: latest_id,
@@ -2038,7 +2074,14 @@ async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
                 )
                 .map_err(|e| format!("write latest failed: {e}"))?;
             let _ = latest_tree.flush();
+
+            if prev_pair != next_pair {
+                summary.updated += 1;
+            }
         } else {
+            if prev_pair.is_some() {
+                summary.updated += 1;
+            }
             let _ = latest_tree.remove(aid.as_bytes());
             let _ = latest_tree.flush();
         }
@@ -2056,7 +2099,21 @@ async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
         let _ = seen_tree.flush();
     }
 
+    Ok(summary)
+}
+
+async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = scan_latest_chapters_with_mode(app, false).await?;
     Ok(())
+}
+
+#[tauri::command]
+async fn api_local_favorites_scan_latest(app: tauri::AppHandle) -> Result<LatestScanSummary, String> {
+    let summary = scan_latest_chapters_with_mode(app.clone(), true).await?;
+    if let Err(e) = scan_follow_updates(app).await {
+        logl!("[tauri][follow] scan after manual latest refresh failed: {e}");
+    }
+    Ok(summary)
 }
 
 async fn scan_follow_updates(app: tauri::AppHandle) -> Result<(), String> {
@@ -4484,6 +4541,7 @@ pub fn run() {
             api_cover_cache,
             api_search,
             api_local_favorites_list,
+            api_local_favorites_scan_latest,
             api_local_favorite_has,
             api_local_favorite_toggle,
             api_album,

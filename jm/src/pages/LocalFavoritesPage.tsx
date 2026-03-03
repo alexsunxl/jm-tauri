@@ -34,6 +34,14 @@ type FollowStateEntry = {
 
 type LocalFavoritesSort = "lastRead" | "addedAt";
 
+type LocalFavoritesScanSummary = {
+  total: number;
+  scanned: number;
+  updated: number;
+  failed: number;
+  forced: boolean;
+};
+
 export default function LocalFavoritesPage(props: {
   session: Session;
   onOpenComic: (aid: string) => void;
@@ -63,6 +71,7 @@ export default function LocalFavoritesPage(props: {
   });
   const [followSet, setFollowSet] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
+  const [scanLatestLoading, setScanLatestLoading] = useState(false);
   const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
@@ -169,6 +178,28 @@ export default function LocalFavoritesPage(props: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
+    }
+  };
+
+  const scanLatestChapters = async () => {
+    if (scanLatestLoading) return;
+    setError("");
+    setScanLatestLoading(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const summary = await invoke<LocalFavoritesScanSummary>("api_local_favorites_scan_latest");
+      await load(typeFilter);
+      const failedText = summary.failed > 0 ? `，失败 ${summary.failed} 本` : "";
+      showToast({
+        ok: true,
+        text: `扫描完成：共 ${summary.total} 本，扫描 ${summary.scanned} 本，更新 ${summary.updated} 本${failedText}`,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      showToast({ ok: false, text: `扫描失败：${msg}` });
+    } finally {
+      setScanLatestLoading(false);
     }
   };
 
@@ -313,6 +344,18 @@ export default function LocalFavoritesPage(props: {
               );
             })}
           </div>
+          {typeFilter === "multi" ? (
+            <button
+              type="button"
+              className="h-9 shrink-0 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+              onClick={() => {
+                void scanLatestChapters();
+              }}
+              disabled={loading || scanLatestLoading}
+            >
+              {scanLatestLoading ? "扫描中..." : "扫描最新话"}
+            </button>
+          ) : null}
           <input
             className="h-9 min-w-[180px] flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm"
             placeholder="过滤：标题/作者/AID"
