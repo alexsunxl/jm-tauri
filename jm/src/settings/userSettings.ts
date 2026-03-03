@@ -10,7 +10,7 @@ export const DEFAULT_READ_IMG_SCALE = 1;
 export const MIN_READ_IMG_SCALE = 0.3;
 export const MAX_READ_IMG_SCALE = 1;
 
-export const DEFAULT_READ_MAX_CONCURRENCY = 3;
+export const DEFAULT_READ_MAX_CONCURRENCY = 4;
 export const MIN_READ_MAX_CONCURRENCY = 1;
 export const MAX_READ_MAX_CONCURRENCY = 8;
 

@@ -613,7 +613,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
             <div>{MAX_READ_MAX_CONCURRENCY}</div>
           </div>
           <div className="text-xs text-zinc-500">
-            数值越高处理更快，但可能更卡。移动端建议 2–3。
+            调度采用慢启动爬升（先用较低并发快速出首屏的图片，确认稳定后再逐步增加到并发上限）：优先保证可视区内容，再尽量吃满带宽。
           </div>
           <button
             type="button"
