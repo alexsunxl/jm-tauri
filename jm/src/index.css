@@ -20,15 +20,15 @@ body,
 }
 
 .safe-area-bottom {
-  padding-bottom: var(--safe-area-bottom-computed, var(--safe-area-bottom));
+  padding-bottom: var(--safe-area-bottom, 0px);
 }
 
 .home-mobile-safe-bottom {
-  padding-bottom: calc(5rem + var(--safe-area-bottom-computed, var(--safe-area-bottom, 0px)));
+  padding-bottom: calc(5rem + var(--safe-area-bottom, 0px));
 }
 
 .mobile-bottom-nav {
-  bottom: var(--safe-area-bottom-computed, var(--safe-area-bottom, 0px));
+  bottom: var(--safe-area-bottom, 0px);
 }
 
 @media (min-width: 768px) {
