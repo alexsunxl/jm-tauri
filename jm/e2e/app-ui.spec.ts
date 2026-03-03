@@ -1,0 +1,97 @@
+import { expect, test } from "@playwright/test";
+
+import { installTauriMock } from "./support/tauriMock";
+
+test("search input stays editable during IME composition and returns results", async ({ page }) => {
+  await installTauriMock(page, {
+    searchItems: [
+      { id: "1298961", name: "长十郎大战黑土", author: "臭弟弟" },
+      { id: "1246367", name: "黑土本子 重制版", author: "EEGOES" },
+    ],
+  });
+
+  await page.goto("/#/home/search");
+
+  const input = page.getByPlaceholder("输入关键词 / JM12345");
+  await expect(input).toBeVisible();
+
+  await input.click();
+  await input.dispatchEvent("compositionstart");
+  await input.fill("黑土");
+  await expect(input).toHaveValue("黑土");
+  await input.dispatchEvent("compositionend", { data: "黑土" });
+
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText("长十郎大战黑土")).toBeVisible();
+});
+
+test("local favorites filter/sort tabs persist in localStorage", async ({ page }) => {
+  await installTauriMock(page, {
+    favorites: [
+      {
+        aid: "10001",
+        title: "Alpha",
+        author: "A",
+        coverUrl: "",
+        addedAt: 100,
+        updatedAt: 100,
+        latestChapterSort: "12",
+      },
+      {
+        aid: "10002",
+        title: "Beta",
+        author: "B",
+        coverUrl: "",
+        addedAt: 200,
+        updatedAt: 200,
+        latestChapterSort: null,
+      },
+    ],
+    readProgress: {
+      "10001": { updatedAt: 300, chapterId: "10001", pageIndex: 1 },
+      "10002": { updatedAt: 50, chapterId: "10002", pageIndex: 1 },
+    },
+  });
+
+  await page.goto("/#/home/local_favorites");
+  await expect(page.getByRole("button", { name: "多话", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "多话", exact: true }).click();
+  await page.getByRole("button", { name: "收藏时间", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "多话", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "收藏时间", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => ({
+        typeFilter: localStorage.getItem("jm_type_local_favorites"),
+        sortMode: localStorage.getItem("jm_sort_local_favorites"),
+      })),
+    )
+    .toEqual({ typeFilter: "multi", sortMode: "addedAt" });
+
+  await page.reload();
+
+  await expect(page.getByRole("button", { name: "多话", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: "收藏时间", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  const calls = await page.evaluate(() => (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>);
+  const calledKinds = calls
+    .filter((x) => x.cmd === "api_local_favorites_list")
+    .map((x) => x.args?.kind)
+    .filter(Boolean);
+  expect(calledKinds).toContain("multi");
+});

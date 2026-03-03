@@ -9,6 +9,8 @@ lerna-debug.log*
 
 jm/node_modules
 jm/dist
+jm/test-results
+jm/playwright-report
 dist-ssr
 *.local
 
