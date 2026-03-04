@@ -164,6 +164,7 @@ struct UpdateDownloadProgressEvent {
 }
 
 const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "app-update-download-progress";
+const LOCAL_FAVORITES_SCAN_PROGRESS_EVENT: &str = "local-favorites-scan-progress";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +259,23 @@ struct LatestScanSummary {
     updated: u64,
     failed: u64,
     forced: bool,
+    cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LatestScanProgressEvent {
+    scan_id: String,
+    aid: String,
+    title: String,
+    status: String,
+    total: u64,
+    scanned: u64,
+    updated: u64,
+    failed: u64,
+    latest_chapter_sort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1995,55 +2013,125 @@ fn parse_series_latest(series: &[serde_json::Value]) -> Option<(String, Option<S
     Some((last.2, last.3))
 }
 
+fn local_favorites_scan_cancel_key(scan_id: &str) -> String {
+    format!("localfav_scan:{scan_id}")
+}
+
+fn emit_latest_scan_progress(app: &tauri::AppHandle, ev: LatestScanProgressEvent) {
+    let _ = app.emit(LOCAL_FAVORITES_SCAN_PROGRESS_EVENT, ev);
+}
+
 async fn scan_latest_chapters_with_mode(
     app: tauri::AppHandle,
     force: bool,
+    kind: Option<String>,
+    scan_id: Option<String>,
+    cancel_token: Option<Arc<AtomicBool>>,
 ) -> Result<LatestScanSummary, String> {
     let store = app.state::<LocalFavoritesStore>();
     let tree = store.tree()?.clone();
     let latest_tree = read_latest_tree()?;
     let seen_tree = read_latest_seen_tree()?;
 
-    let mut summary = LatestScanSummary {
-        total: 0,
-        scanned: 0,
-        updated: 0,
-        failed: 0,
-        forced: force,
+    let kind = kind.unwrap_or_else(|| "all".to_string());
+    let kind = kind.trim().to_ascii_lowercase();
+    let filter_multi = if kind.eq_ignore_ascii_case("single") {
+        Some(false)
+    } else if kind.eq_ignore_ascii_case("multi") {
+        Some(true)
+    } else {
+        None
     };
 
+    let mut targets: Vec<(LocalFavoriteItem, Option<LatestChapterEntry>)> = Vec::new();
     for item in tree.iter() {
         let (_, val) = item.map_err(|e| format!("sled iter failed: {e}"))?;
         let fav: LocalFavoriteItem =
             bincode::deserialize(&val).map_err(|e| format!("decode favorite failed: {e}"))?;
-        let aid = fav.aid.clone();
-
-        summary.total += 1;
-
-        if !force
-            && seen_tree
-                .get(aid.as_bytes())
-                .map_err(|e| format!("read latest seen failed: {e}"))?
-                .is_some()
-        {
-            continue;
-        }
-
-        summary.scanned += 1;
-
-        let prev_latest = latest_tree
-            .get(aid.as_bytes())
+        let latest = latest_tree
+            .get(fav.aid.as_bytes())
             .map_err(|e| format!("read latest failed: {e}"))?
             .and_then(|bytes| serde_json::from_slice::<LatestChapterEntry>(&bytes).ok());
+        if let Some(need_multi) = filter_multi {
+            let is_multi = latest
+                .as_ref()
+                .and_then(|entry| entry.latest_chapter_sort.as_ref())
+                .is_some();
+            if need_multi != is_multi {
+                continue;
+            }
+        }
+        targets.push((fav, latest));
+    }
+
+    let mut summary = LatestScanSummary {
+        total: targets.len() as u64,
+        scanned: 0,
+        updated: 0,
+        failed: 0,
+        forced: force,
+        cancelled: false,
+    };
+
+    for (fav, prev_latest) in targets {
+        if cancel_token
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::Relaxed))
+        {
+            summary.cancelled = true;
+            break;
+        }
+        let aid = fav.aid.clone();
+        let title = if fav.title.trim().is_empty() {
+            format!("AID {}", aid)
+        } else {
+            fav.title.clone()
+        };
         let prev_pair = prev_latest
             .as_ref()
             .map(|entry| (entry.latest_chapter_id.clone(), entry.latest_chapter_sort.clone()));
+
+        if let Some(scan_id) = &scan_id {
+            emit_latest_scan_progress(
+                &app,
+                LatestScanProgressEvent {
+                    scan_id: scan_id.clone(),
+                    aid: aid.clone(),
+                    title: title.clone(),
+                    status: "scanning".to_string(),
+                    total: summary.total,
+                    scanned: summary.scanned,
+                    updated: summary.updated,
+                    failed: summary.failed,
+                    latest_chapter_sort: None,
+                    message: None,
+                },
+            );
+        }
 
         let album = match api_album(aid.clone(), HashMap::new()).await {
             Ok(v) => v,
             Err(e) => {
                 logl!("[tauri][latest] album fetch failed aid={} err={}", aid, e);
                 summary.failed += 1;
+                summary.scanned += 1;
+                if let Some(scan_id) = &scan_id {
+                    emit_latest_scan_progress(
+                        &app,
+                        LatestScanProgressEvent {
+                            scan_id: scan_id.clone(),
+                            aid: aid.clone(),
+                            title,
+                            status: "failed".to_string(),
+                            total: summary.total,
+                            scanned: summary.scanned,
+                            updated: summary.updated,
+                            failed: summary.failed,
+                            latest_chapter_sort: None,
+                            message: Some(e),
+                        },
+                    );
+                }
                 continue;
             }
         };
@@ -2058,8 +2146,12 @@ async fn scan_latest_chapters_with_mode(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
+        let mut latest_for_emit: Option<String> = None;
+        let mut status = "noUpdate".to_string();
+
         if let Some((latest_id, latest_sort)) = parse_series_latest(&series) {
             let next_pair = Some((latest_id.clone(), latest_sort.clone()));
+            latest_for_emit = latest_sort.clone();
             let latest_entry = LatestChapterEntry {
                 aid: aid.clone(),
                 latest_chapter_id: latest_id,
@@ -2077,14 +2169,18 @@ async fn scan_latest_chapters_with_mode(
 
             if prev_pair != next_pair {
                 summary.updated += 1;
+                status = "updated".to_string();
             }
         } else {
             if prev_pair.is_some() {
                 summary.updated += 1;
+                status = "updated".to_string();
             }
             let _ = latest_tree.remove(aid.as_bytes());
             let _ = latest_tree.flush();
         }
+
+        summary.scanned += 1;
 
         let seen_entry = LatestScanEntry {
             aid: aid.clone(),
@@ -2097,23 +2193,93 @@ async fn scan_latest_chapters_with_mode(
             )
             .map_err(|e| format!("write seen failed: {e}"))?;
         let _ = seen_tree.flush();
+
+        if let Some(scan_id) = &scan_id {
+            emit_latest_scan_progress(
+                &app,
+                LatestScanProgressEvent {
+                    scan_id: scan_id.clone(),
+                    aid,
+                    title,
+                    status,
+                    total: summary.total,
+                    scanned: summary.scanned,
+                    updated: summary.updated,
+                    failed: summary.failed,
+                    latest_chapter_sort: latest_for_emit,
+                    message: None,
+                },
+            );
+        }
+    }
+
+    if summary.cancelled {
+        if let Some(scan_id) = &scan_id {
+            emit_latest_scan_progress(
+                &app,
+                LatestScanProgressEvent {
+                    scan_id: scan_id.clone(),
+                    aid: "".to_string(),
+                    title: "扫描已取消".to_string(),
+                    status: "cancelled".to_string(),
+                    total: summary.total,
+                    scanned: summary.scanned,
+                    updated: summary.updated,
+                    failed: summary.failed,
+                    latest_chapter_sort: None,
+                    message: None,
+                },
+            );
+        }
     }
 
     Ok(summary)
 }
 
 async fn scan_latest_chapters(app: tauri::AppHandle) -> Result<(), String> {
-    let _ = scan_latest_chapters_with_mode(app, false).await?;
+    let _ = scan_latest_chapters_with_mode(app, false, None, None, None).await?;
     Ok(())
 }
 
 #[tauri::command]
-async fn api_local_favorites_scan_latest(app: tauri::AppHandle) -> Result<LatestScanSummary, String> {
-    let summary = scan_latest_chapters_with_mode(app.clone(), true).await?;
-    if let Err(e) = scan_follow_updates(app).await {
-        logl!("[tauri][follow] scan after manual latest refresh failed: {e}");
+async fn api_local_favorites_scan_latest(
+    app: tauri::AppHandle,
+    kind: Option<String>,
+    scan_id: Option<String>,
+    registry: tauri::State<'_, CancelRegistry>,
+) -> Result<LatestScanSummary, String> {
+    let scan_id = scan_id.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    let cancel_token = scan_id.as_ref().map(|id| {
+        let key = local_favorites_scan_cancel_key(id);
+        let token = registry.token_for(&key);
+        token.store(false, Ordering::Relaxed);
+        token
+    });
+
+    let summary = scan_latest_chapters_with_mode(app.clone(), true, kind, scan_id, cancel_token).await?;
+    if !summary.cancelled {
+        if let Err(e) = scan_follow_updates(app).await {
+            logl!("[tauri][follow] scan after manual latest refresh failed: {e}");
+        }
     }
     Ok(summary)
+}
+
+#[tauri::command]
+fn api_local_favorites_scan_cancel(
+    scan_id: String,
+    registry: tauri::State<'_, CancelRegistry>,
+) -> Result<(), String> {
+    let scan_id = scan_id.trim();
+    if scan_id.is_empty() {
+        return Err("scan id is required".to_string());
+    }
+    let key = local_favorites_scan_cancel_key(scan_id);
+    registry.cancel(&key);
+    Ok(())
 }
 
 async fn scan_follow_updates(app: tauri::AppHandle) -> Result<(), String> {
@@ -4542,6 +4708,7 @@ pub fn run() {
             api_search,
             api_local_favorites_list,
             api_local_favorites_scan_latest,
+            api_local_favorites_scan_cancel,
             api_local_favorite_has,
             api_local_favorite_toggle,
             api_album,

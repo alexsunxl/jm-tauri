@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import type { Session } from "../auth/session";
@@ -40,7 +40,39 @@ type LocalFavoritesScanSummary = {
   updated: number;
   failed: number;
   forced: boolean;
+  cancelled: boolean;
 };
+
+type LocalFavoritesScanStatus =
+  | "scanning"
+  | "updated"
+  | "noUpdate"
+  | "failed"
+  | "cancelled";
+
+type LocalFavoritesScanProgressEvent = {
+  scanId: string;
+  aid: string;
+  title: string;
+  status: LocalFavoritesScanStatus;
+  total: number;
+  scanned: number;
+  updated: number;
+  failed: number;
+  latestChapterSort?: string | null;
+  message?: string | null;
+};
+
+type ScanBroadcastRow = {
+  key: string;
+  aid: string;
+  title: string;
+  status: LocalFavoritesScanStatus;
+  latestChapterSort?: string | null;
+  message?: string | null;
+};
+
+const LOCAL_FAVORITES_SCAN_PROGRESS_EVENT = "local-favorites-scan-progress";
 
 export default function LocalFavoritesPage(props: {
   session: Session;
@@ -72,6 +104,15 @@ export default function LocalFavoritesPage(props: {
   const [followSet, setFollowSet] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [scanLatestLoading, setScanLatestLoading] = useState(false);
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [scanProgress, setScanProgress] = useState({
+    total: 0,
+    scanned: 0,
+    updated: 0,
+    failed: 0,
+  });
+  const [scanRows, setScanRows] = useState<ScanBroadcastRow[]>([]);
+  const [scanCompleted, setScanCompleted] = useState(false);
   const [openReaderLoading, setOpenReaderLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
@@ -92,6 +133,7 @@ export default function LocalFavoritesPage(props: {
       return "lastRead";
     }
   });
+  const scanIdRef = useRef("");
   const { showToast } = useToast();
 
   const load = async (kind = typeFilter) => {
@@ -164,6 +206,55 @@ export default function LocalFavoritesPage(props: {
     }
   }, [sortMode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const off = await listen<LocalFavoritesScanProgressEvent>(
+          LOCAL_FAVORITES_SCAN_PROGRESS_EVENT,
+          (event) => {
+            const payload = event.payload;
+            if (!payload) return;
+            if (!scanIdRef.current || payload.scanId !== scanIdRef.current) return;
+            setScanProgress((prev) => ({
+              total: Number.isFinite(payload.total) ? payload.total : prev.total,
+              scanned: Number.isFinite(payload.scanned) ? payload.scanned : prev.scanned,
+              updated: Number.isFinite(payload.updated) ? payload.updated : prev.updated,
+              failed: Number.isFinite(payload.failed) ? payload.failed : prev.failed,
+            }));
+            const key = payload.aid && payload.aid.trim() ? payload.aid : `meta-${payload.status}`;
+            const row: ScanBroadcastRow = {
+              key,
+              aid: payload.aid ?? "",
+              title: payload.title ?? "",
+              status: payload.status,
+              latestChapterSort: payload.latestChapterSort ?? null,
+              message: payload.message ?? null,
+            };
+            setScanRows((prev) => {
+              const rest = prev.filter((x) => x.key !== key);
+              return [row, ...rest].slice(0, 300);
+            });
+          },
+        );
+        if (cancelled) {
+          off();
+          return;
+        }
+        unlisten = off;
+      } catch {
+        // ignore in non-tauri test/runtime
+      }
+    };
+    void setup();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const remove = async (aid: string) => {
     setError("");
     try {
@@ -181,25 +272,79 @@ export default function LocalFavoritesPage(props: {
     }
   };
 
+  const makeScanId = () => `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+  const formatScanRowText = (row: ScanBroadcastRow) => {
+    if (row.status === "scanning") return "扫描中";
+    if (row.status === "updated") {
+      if (row.latestChapterSort) return `扫描完成，最新第${row.latestChapterSort}话`;
+      return "扫描完成，最新信息已更新";
+    }
+    if (row.status === "noUpdate") return "扫描完成，无更新";
+    if (row.status === "failed") return `扫描失败${row.message ? `：${row.message}` : ""}`;
+    return "扫描已取消";
+  };
+
   const scanLatestChapters = async () => {
     if (scanLatestLoading) return;
     setError("");
+    const scanId = makeScanId();
+    scanIdRef.current = scanId;
+    setScanRows([]);
+    setScanCompleted(false);
+    setScanProgress({
+      total: Math.max(0, Number(stats.filtered || 0)),
+      scanned: 0,
+      updated: 0,
+      failed: 0,
+    });
+    setScanModalOpen(true);
     setScanLatestLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const summary = await invoke<LocalFavoritesScanSummary>("api_local_favorites_scan_latest");
-      await load(typeFilter);
+      const summary = await invoke<LocalFavoritesScanSummary>("api_local_favorites_scan_latest", {
+        kind: "multi",
+        scanId,
+      });
+      setScanProgress({
+        total: summary.total,
+        scanned: summary.scanned,
+        updated: summary.updated,
+        failed: summary.failed,
+      });
+      setScanCompleted(true);
+      await load("multi");
       const failedText = summary.failed > 0 ? `，失败 ${summary.failed} 本` : "";
+      const cancelledText = summary.cancelled ? "（已取消）" : "";
       showToast({
         ok: true,
-        text: `扫描完成：共 ${summary.total} 本，扫描 ${summary.scanned} 本，更新 ${summary.updated} 本${failedText}`,
+        text: `扫描完成${cancelledText}：共 ${summary.total} 本，已扫描 ${summary.scanned} 本，更新 ${summary.updated} 本${failedText}`,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
+      setScanCompleted(true);
       showToast({ ok: false, text: `扫描失败：${msg}` });
     } finally {
       setScanLatestLoading(false);
+    }
+  };
+
+  const cancelScanLatest = async () => {
+    if (!scanLatestLoading || !scanIdRef.current) {
+      setScanModalOpen(false);
+      if (!scanLatestLoading) {
+        scanIdRef.current = "";
+      }
+      return;
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("api_local_favorites_scan_cancel", { scanId: scanIdRef.current });
+      showToast({ ok: true, text: "已请求取消扫描" });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast({ ok: false, text: `取消失败：${msg}` });
     }
   };
 
@@ -344,18 +489,6 @@ export default function LocalFavoritesPage(props: {
               );
             })}
           </div>
-          {typeFilter === "multi" ? (
-            <button
-              type="button"
-              className="h-9 shrink-0 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
-              onClick={() => {
-                void scanLatestChapters();
-              }}
-              disabled={loading || scanLatestLoading}
-            >
-              {scanLatestLoading ? "扫描中..." : "扫描最新话"}
-            </button>
-          ) : null}
           <input
             className="h-9 min-w-[180px] flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm"
             placeholder="过滤：标题/作者/AID"
@@ -372,6 +505,22 @@ export default function LocalFavoritesPage(props: {
           </button>
           <ListViewToggle value={viewMode} onChange={setViewMode} />
         </div>
+
+        {typeFilter === "multi" ? (
+          <div className="mt-3 flex items-center justify-end">
+            <button
+              type="button"
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+              onClick={() => {
+                void scanLatestChapters();
+              }}
+              disabled={loading || scanLatestLoading}
+            >
+              {scanLatestLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {scanLatestLoading ? "扫描中..." : "扫描多话最新章节"}
+            </button>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="mt-3 rounded-md border border-zinc-200 bg-white p-2 text-sm text-red-600">
@@ -545,6 +694,64 @@ export default function LocalFavoritesPage(props: {
           <div className="text-sm text-zinc-600">暂无本地收藏</div>
         ) : null}
       </div>
+
+      {scanModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex h-[min(78vh,640px)] w-full max-w-2xl flex-col rounded-lg border border-zinc-200 bg-white p-4 shadow-xl">
+            <div className="text-base font-semibold text-zinc-900">扫描多话最新章节</div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 text-sm text-zinc-700">
+              <div className="inline-flex items-center gap-2">
+                {scanLatestLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                <span>{scanLatestLoading ? "扫描中..." : "扫描完成"}</span>
+              </div>
+              <div className="text-zinc-600">
+                进度：
+                <span className="font-medium text-zinc-900">
+                  {scanProgress.scanned}/{scanProgress.total}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-3 flex-1 overflow-y-auto rounded-md border border-zinc-200 bg-zinc-50 p-3">
+              {scanRows.length === 0 ? (
+                <div className="text-sm text-zinc-500">等待扫描播报...</div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {scanRows.map((row) => (
+                    <div
+                      key={row.key}
+                      className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm"
+                    >
+                      <div className="truncate font-medium text-zinc-900">{row.title || "未知漫画"}</div>
+                      <div
+                        className={`mt-1 text-xs ${
+                          row.status === "failed" ? "text-red-600" : "text-zinc-600"
+                        }`}
+                      >
+                        {formatScanRowText(row)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                className="h-9 rounded-md border border-zinc-200 bg-white px-4 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+                onClick={() => {
+                  void cancelScanLatest();
+                }}
+                disabled={scanLatestLoading && !scanIdRef.current}
+              >
+                {scanLatestLoading ? "取消扫描" : scanCompleted ? "关闭" : "取消"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

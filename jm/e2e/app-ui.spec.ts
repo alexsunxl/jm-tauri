@@ -115,20 +115,24 @@ test("local favorites multi tab can trigger latest chapter scan", async ({ page 
         coverUrl: "",
         addedAt: 90,
         updatedAt: 90,
-        latestChapterSort: null,
+        latestChapterSort: "40",
       },
     ],
   });
 
   await page.goto("/#/home/local_favorites");
 
-  await expect(page.getByRole("button", { name: "扫描最新话", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "扫描多话最新章节", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "多话", exact: true }).click();
-  const scanBtn = page.getByRole("button", { name: "扫描最新话", exact: true });
+  const scanBtn = page.getByRole("button", { name: "扫描多话最新章节", exact: true });
   await expect(scanBtn).toBeVisible();
 
   await scanBtn.click();
+
+  const scanModal = page.locator(".fixed.inset-0.z-50");
+  await expect(scanModal.getByText("扫描多话最新章节", { exact: true })).toBeVisible();
+  await expect(scanModal.getByText(/进度：/)).toBeVisible();
 
   await expect
     .poll(async () =>
@@ -142,4 +146,10 @@ test("local favorites multi tab can trigger latest chapter scan", async ({ page 
       }),
     )
     .toEqual({ scanCount: 1, multiListCount: 2 });
+
+  await expect(scanModal.getByText("Gamma", { exact: true })).toBeVisible();
+  await expect(scanModal.getByText("扫描完成，最新第33话")).toBeVisible();
+  await expect(scanModal.getByText(/进度：\s*2\/2/)).toBeVisible();
+  await scanModal.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(scanModal).toHaveCount(0);
 });

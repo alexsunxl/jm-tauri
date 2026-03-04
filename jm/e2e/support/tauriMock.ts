@@ -57,6 +57,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     let callbackId = 1;
     let eventListenerId = 1;
     const callbacks = new Map<number, (payload: unknown) => void>();
+    const eventListeners = new Map<number, { event: string; handler: number }>();
+    const cancelledScanIds = new Set<string>();
 
     (window as any).__mockInvokeCalls = [];
     (window as any).isTauri = true;
@@ -75,6 +77,21 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         return favorites.filter((it) => Boolean(it.latestChapterSort));
       }
       return favorites;
+    };
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+    const emitEvent = (event: string, payload: unknown) => {
+      for (const [id, listener] of eventListeners.entries()) {
+        if (listener.event !== event) continue;
+        const cb = callbacks.get(listener.handler);
+        if (!cb) continue;
+        cb({
+          event,
+          id,
+          payload,
+        });
+      }
     };
 
     const invoke = async (cmd: string, args?: Record<string, unknown>) => {
@@ -99,13 +116,79 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
           };
         }
         case "api_local_favorites_scan_latest": {
+          const kind = typeof args?.kind === "string" ? args.kind : "all";
+          const scanId = typeof args?.scanId === "string" ? args.scanId : "scan-e2e";
+          const target = filterFavorites(kind);
+          const total = target.length;
+          let scanned = 0;
+          let updated = 0;
+          let failed = 0;
+
+          for (const item of target) {
+            if (cancelledScanIds.has(scanId)) {
+              emitEvent("local-favorites-scan-progress", {
+                scanId,
+                aid: "",
+                title: "扫描已取消",
+                status: "cancelled",
+                total,
+                scanned,
+                updated,
+                failed,
+              });
+              return {
+                total,
+                scanned,
+                updated,
+                failed,
+                forced: true,
+                cancelled: true,
+              };
+            }
+
+            emitEvent("local-favorites-scan-progress", {
+              scanId,
+              aid: item.aid,
+              title: item.title,
+              status: "scanning",
+              total,
+              scanned,
+              updated,
+              failed,
+              latestChapterSort: null,
+            });
+            await sleep(30);
+
+            scanned += 1;
+            if (item.latestChapterSort) {
+              updated += 1;
+            }
+            emitEvent("local-favorites-scan-progress", {
+              scanId,
+              aid: item.aid,
+              title: item.title,
+              status: item.latestChapterSort ? "updated" : "noUpdate",
+              total,
+              scanned,
+              updated,
+              failed,
+              latestChapterSort: item.latestChapterSort ?? null,
+            });
+          }
+
           return {
-            total: favorites.length,
-            scanned: favorites.length,
-            updated: favorites.filter((it) => Boolean(it.latestChapterSort)).length,
-            failed: 0,
+            total,
+            scanned,
+            updated,
+            failed,
             forced: true,
+            cancelled: false,
           };
+        }
+        case "api_local_favorites_scan_cancel": {
+          const scanId = typeof args?.scanId === "string" ? args.scanId : "";
+          if (scanId) cancelledScanIds.add(scanId);
+          return null;
         }
         case "api_follow_state_list": {
           return followAids.map((aid) => ({
@@ -130,10 +213,16 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         case "plugin:opener|open_url":
         case "plugin:opener|open_path":
         case "plugin:event|unlisten": {
+          const eventId = Number(args?.eventId ?? -1);
+          eventListeners.delete(eventId);
           return null;
         }
         case "plugin:event|listen": {
-          return eventListenerId++;
+          const event = String(args?.event ?? "");
+          const handler = Number(args?.handler ?? -1);
+          const id = eventListenerId++;
+          eventListeners.set(id, { event, handler });
+          return id;
         }
         default:
           throw new Error(`Unmocked invoke command: ${cmd}`);
