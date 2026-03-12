@@ -21,6 +21,24 @@ type MockOptions = {
   searchItems?: MockSearchItem[];
   followAids?: string[];
   readProgress?: Record<string, { updatedAt: number; chapterId?: string; pageIndex?: number }>;
+  appVersion?: string;
+  updateCheckInfo?: {
+    currentVersion?: string;
+    currentTag?: string | null;
+    latestTag?: string | null;
+    releaseUrl?: string | null;
+    notes?: string | null;
+    hasUpdate?: boolean;
+    asset?: {
+      name: string;
+      url: string;
+      size: number;
+    } | null;
+    isDev?: boolean;
+    compareMode?: string | null;
+  };
+  updateDownloadPath?: string;
+  scanDelayMs?: number;
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -29,6 +47,18 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const searchItems = Array.isArray(payload.searchItems) ? payload.searchItems : [];
     const followAids = Array.isArray(payload.followAids) ? payload.followAids : [];
     const readProgress = payload.readProgress ?? {};
+    const appVersion =
+      typeof payload.appVersion === "string" && payload.appVersion.trim()
+        ? payload.appVersion.trim()
+        : "0.1.25+dev";
+    const scanDelayMs =
+      typeof payload.scanDelayMs === "number" && Number.isFinite(payload.scanDelayMs)
+        ? Math.max(0, payload.scanDelayMs)
+        : 30;
+    const updateDownloadPath =
+      typeof payload.updateDownloadPath === "string" && payload.updateDownloadPath.trim()
+        ? payload.updateDownloadPath.trim()
+        : "/tmp/mock-update.bin";
 
     const defaultSession = {
       user: {
@@ -80,6 +110,23 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     };
 
     const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+    const defaultUpdateCheckInfo = {
+      currentVersion: appVersion,
+      currentTag: null,
+      latestTag: null,
+      releaseUrl: "https://github.com/alexsunxl/jm-tauri/releases/latest",
+      notes: null,
+      hasUpdate: false,
+      asset: null,
+      isDev: !appVersion.includes("+jm-"),
+      compareMode: "tag",
+    };
+
+    const updateCheckInfo = {
+      ...defaultUpdateCheckInfo,
+      ...(payload.updateCheckInfo ?? {}),
+    };
 
     const emitEvent = (event: string, payload: unknown) => {
       for (const [id, listener] of eventListeners.entries()) {
@@ -157,7 +204,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
               failed,
               latestChapterSort: null,
             });
-            await sleep(30);
+            await sleep(scanDelayMs);
 
             scanned += 1;
             if (item.latestChapterSort) {
@@ -190,6 +237,44 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
           if (scanId) cancelledScanIds.add(scanId);
           return null;
         }
+        case "app_update_check": {
+          return updateCheckInfo;
+        }
+        case "app_update_download": {
+          const url = typeof args?.url === "string" ? args.url : "";
+          const name = typeof args?.name === "string" ? args.name : "update.bin";
+          const steps = [8, 37, 76, 100];
+          for (const percent of steps) {
+            emitEvent("app-update-download-progress", {
+              url,
+              downloadedBytes: percent,
+              totalBytes: 100,
+              percent,
+            });
+            await sleep(70);
+          }
+          return { path: updateDownloadPath, name };
+        }
+        case "plugin:app|version": {
+          return appVersion;
+        }
+        case "api_config_get": {
+          return { socksProxy: null };
+        }
+        case "api_api_base_current": {
+          return "https://a.example.com";
+        }
+        case "api_api_base_list": {
+          return ["https://a.example.com", "https://b.example.com"];
+        }
+        case "api_read_cache_stats": {
+          return {
+            totalBytes: 1024,
+            totalFiles: 2,
+            totalComics: 1,
+            updatedAt: Date.now(),
+          };
+        }
         case "api_follow_state_list": {
           return followAids.map((aid) => ({
             aid,
@@ -209,6 +294,14 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         }
         case "api_read_progress_upsert":
         case "api_read_progress_clear":
+        case "api_read_cache_refresh":
+        case "api_read_cache_cleanup":
+        case "api_config_set_socks_proxy":
+        case "api_api_domain_fetch":
+        case "api_api_base_select":
+        case "api_api_base_latency":
+        case "api_read_progress_export":
+        case "api_read_progress_import":
         case "api_local_favorite_toggle":
         case "plugin:opener|open_url":
         case "plugin:opener|open_path":

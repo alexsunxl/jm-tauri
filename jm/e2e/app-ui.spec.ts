@@ -96,6 +96,54 @@ test("local favorites filter/sort tabs persist in localStorage", async ({ page }
   expect(calledKinds).toContain("multi");
 });
 
+test("settings release build auto-checks update and downloads with progress", async ({ page }) => {
+  await installTauriMock(page, {
+    appVersion: "0.1.25+jm-20260312-000000",
+    updateCheckInfo: {
+      currentVersion: "0.1.25+jm-20260312-000000",
+      currentTag: "jm-20260312-000000",
+      latestTag: "jm-20260312-010000",
+      hasUpdate: true,
+      asset: {
+        name: "jm.apk",
+        url: "https://example.com/jm.apk",
+        size: 123456,
+      },
+      isDev: false,
+      compareMode: "tag",
+      releaseUrl: "https://github.com/alexsunxl/jm-tauri/releases/latest",
+    },
+    updateDownloadPath: "/tmp/jm.apk",
+  });
+
+  await page.goto("/#/home/settings");
+
+  await expect(page.getByText(/版本：0\.1\.25\+jm-20260312-000000（release）/)).toBeVisible();
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        return calls.filter((x) => x.cmd === "app_update_check").length;
+      });
+    })
+    .toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "自动更新", exact: true }).click();
+  await expect(page.getByText(/正在下载\.\.\./)).toBeVisible();
+  await expect(page.getByText(/正在下载\.\.\.\s*\d+%/)).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        const downloadCalls = calls.filter((x) => x.cmd === "app_update_download").length;
+        const openPathCalls = calls.filter((x) => x.cmd === "plugin:opener|open_path").length;
+        return { downloadCalls, openPathCalls };
+      });
+    })
+    .toEqual({ downloadCalls: 1, openPathCalls: 1 });
+});
+
 test("local favorites multi tab can trigger latest chapter scan", async ({ page }) => {
   await installTauriMock(page, {
     favorites: [
@@ -150,6 +198,66 @@ test("local favorites multi tab can trigger latest chapter scan", async ({ page 
   await expect(scanModal.getByText("Gamma", { exact: true })).toBeVisible();
   await expect(scanModal.getByText("扫描完成，最新第33话")).toBeVisible();
   await expect(scanModal.getByText(/进度：\s*2\/2/)).toBeVisible();
+  await scanModal.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(scanModal).toHaveCount(0);
+});
+
+test("local favorites scan can be cancelled mid-run", async ({ page }) => {
+  await installTauriMock(page, {
+    favorites: [
+      {
+        aid: "41001",
+        title: "Alpha One",
+        author: "Author A",
+        coverUrl: "",
+        addedAt: 100,
+        updatedAt: 100,
+        latestChapterSort: "12",
+      },
+      {
+        aid: "41002",
+        title: "Beta Two",
+        author: "Author B",
+        coverUrl: "",
+        addedAt: 99,
+        updatedAt: 99,
+        latestChapterSort: "13",
+      },
+      {
+        aid: "41003",
+        title: "Gamma Three",
+        author: "Author C",
+        coverUrl: "",
+        addedAt: 98,
+        updatedAt: 98,
+        latestChapterSort: "14",
+      },
+    ],
+    scanDelayMs: 220,
+  });
+
+  await page.goto("/#/home/local_favorites");
+  await page.getByRole("button", { name: "多话", exact: true }).click();
+  await page.getByRole("button", { name: "扫描多话最新章节", exact: true }).click();
+
+  const scanModal = page.locator(".fixed.inset-0.z-50");
+  await expect(scanModal.getByText("扫描中...", { exact: true })).toBeVisible();
+
+  await scanModal.getByRole("button", { name: "取消扫描", exact: true }).click();
+
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        const cancelCalls = calls.filter((x) => x.cmd === "api_local_favorites_scan_cancel").length;
+        return cancelCalls;
+      });
+    })
+    .toBe(1);
+
+  await expect(scanModal.getByText("扫描已取消").first()).toBeVisible();
+  await expect(scanModal.getByRole("button", { name: "关闭", exact: true })).toBeVisible();
+
   await scanModal.getByRole("button", { name: "关闭", exact: true }).click();
   await expect(scanModal).toHaveCount(0);
 });
