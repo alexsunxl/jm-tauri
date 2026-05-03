@@ -30,6 +30,10 @@ export function getReadProgress(aid: string): ReadProgress | null {
   return all[aid] ?? null;
 }
 
+export function getAllReadProgress(): ReadProgress[] {
+  return Object.values(loadAll()).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
 export function upsertReadProgress(entry: ReadProgress): void {
   const all = loadAll();
   all[entry.aid] = entry;

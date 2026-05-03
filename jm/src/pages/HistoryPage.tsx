@@ -7,7 +7,8 @@ import CoverImage from "../components/CoverImage";
 import ListViewToggle from "../components/ListViewToggle";
 import Loading from "../components/Loading";
 import { getImgBase } from "../config/endpoints";
-import { getReadProgress } from "../reading/progress";
+import { getAllReadProgress, getReadProgress } from "../reading/progress";
+import type { ReadProgress } from "../reading/progress";
 import { useToast } from "../components/Toast";
 
 export default function HistoryPage(props: {
@@ -60,6 +61,33 @@ export default function HistoryPage(props: {
     },
   );
 
+  const { data: localProgressData, mutate: mutateLocalProgress } = useSWR(
+    "read-progress-history",
+    async () => {
+      const byAid = new Map<string, ReadProgress>();
+      for (const item of getAllReadProgress()) {
+        if (item.aid) byAid.set(item.aid, item);
+      }
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const list = await invoke<ReadProgress[]>("api_read_progress_list");
+        for (const item of list) {
+          if (!item?.aid) continue;
+          const prev = byAid.get(item.aid);
+          if (!prev || (item.updatedAt ?? 0) > (prev.updatedAt ?? 0)) {
+            byAid.set(item.aid, item);
+          }
+        }
+      } catch {
+        // The browser copy is enough when the native store is unavailable.
+      }
+      return [...byAid.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    },
+    {
+      revalidateOnFocus: true,
+    },
+  );
+
   const historyErrorText =
     historyError && !isAuthExpiredError(historyError)
       ? historyError instanceof Error
@@ -80,7 +108,39 @@ export default function HistoryPage(props: {
     }
   }, [viewMode]);
 
-  const historyList: any[] = Array.isArray(historyData?.list) ? historyData.list : [];
+  const apiHistoryList: any[] = Array.isArray(historyData?.list) ? historyData.list : [];
+  const historyList: any[] = useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    const add = (item: any) => {
+      const aid =
+        typeof item?.id === "string" || typeof item?.id === "number"
+          ? String(item.id)
+          : typeof item?.aid === "string" || typeof item?.aid === "number"
+            ? String(item.aid)
+            : "";
+      if (aid) {
+        if (seen.has(aid)) return;
+        seen.add(aid);
+      }
+      out.push(item);
+    };
+
+    for (const item of apiHistoryList) add(item);
+    for (const progress of localProgressData ?? []) {
+      if (!progress.aid) continue;
+      add({
+        id: progress.aid,
+        aid: progress.aid,
+        name: progress.title || `AID ${progress.aid}`,
+        title: progress.title || `AID ${progress.aid}`,
+        coverUrl: progress.coverUrl,
+        localUpdatedAt: progress.updatedAt,
+        localReadProgress: true,
+      });
+    }
+    return out;
+  }, [apiHistoryList, localProgressData]);
   const total =
     typeof historyData?.total === "number"
       ? historyData.total
@@ -89,11 +149,11 @@ export default function HistoryPage(props: {
         : null;
 
   const maxPage = useMemo(() => {
-    if (total != null && historyList.length > 0) {
-      return Math.max(1, Math.floor((total - 1) / historyList.length) + 1);
+    if (total != null && apiHistoryList.length > 0) {
+      return Math.max(1, Math.floor((total - 1) / apiHistoryList.length) + 1);
     }
     return Math.max(1, historyPage);
-  }, [historyList.length, historyPage, total]);
+  }, [apiHistoryList.length, historyPage, total]);
 
   const header = useMemo(() => {
     if (total != null) return `第 ${historyPage} 页 · 共 ${String(total)} 条`;
@@ -170,7 +230,10 @@ export default function HistoryPage(props: {
           <button
             type="button"
             className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm hover:bg-zinc-50"
-            onClick={() => void mutate()}
+            onClick={() => {
+              void mutate();
+              void mutateLocalProgress();
+            }}
             disabled={historyLoading}
           >
             刷新
@@ -245,7 +308,12 @@ export default function HistoryPage(props: {
                       ? item.author_name
                       : "";
                 const progress = aid ? getReadProgress(aid) : null;
-                const cover = aid ? `${getImgBase()}/media/albums/${aid}_3x4.jpg` : "";
+                const cover =
+                  typeof item?.coverUrl === "string" && item.coverUrl
+                    ? item.coverUrl
+                    : aid
+                      ? `${getImgBase()}/media/albums/${aid}_3x4.jpg`
+                      : "";
                 return (
                   <div
                     key={`${aid}-${idx}`}
@@ -272,6 +340,13 @@ export default function HistoryPage(props: {
                       >
                         {title}
                       </button>
+                      {item?.localReadProgress ? (
+                        <div>
+                          <span className="inline-flex h-5 items-center rounded border border-amber-200 bg-amber-50 px-1.5 text-xs text-amber-700">
+                            本地
+                          </span>
+                        </div>
+                      ) : null}
                       <div className="truncate text-xs text-zinc-600">
                         {author ? `作者：${author}` : "作者：—"}
                       </div>
@@ -320,7 +395,12 @@ export default function HistoryPage(props: {
                     ? item.author_name
                   : "";
               const progress = aid ? getReadProgress(aid) : null;
-              const cover = aid ? `${getImgBase()}/media/albums/${aid}_3x4.jpg` : "";
+              const cover =
+                typeof item?.coverUrl === "string" && item.coverUrl
+                  ? item.coverUrl
+                  : aid
+                    ? `${getImgBase()}/media/albums/${aid}_3x4.jpg`
+                    : "";
               return (
                 <div
                   key={`${aid}-${idx}`}
@@ -342,6 +422,13 @@ export default function HistoryPage(props: {
                     >
                       {title}
                     </button>
+                    {item?.localReadProgress ? (
+                      <div className="mt-1">
+                        <span className="inline-flex h-5 items-center rounded border border-amber-200 bg-amber-50 px-1.5 text-xs text-amber-700">
+                          本地
+                        </span>
+                      </div>
+                    ) : null}
                   <div className="truncate text-xs text-zinc-600">
                     {author ? `作者：${author} · ` : ""}
                     AID：{aid || "—"}

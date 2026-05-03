@@ -403,6 +403,8 @@ type ChapterMeta = {
 type ReadingImageListProps = {
   aid: string;
   chapterId: string;
+  readTitle?: string;
+  coverUrl?: string;
   startPage?: number;
   images: ReadImage[];
   segmentNums: number[] | null;
@@ -430,6 +432,8 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
     totalHeight,
   } = useReadingWindow({
     aid: props.aid,
+    readTitle: props.readTitle,
+    coverUrl: props.coverUrl,
     startPage: props.startPage,
     imagesLength: props.images.length,
     effectiveScale: props.effectiveScale,
@@ -912,6 +916,8 @@ function useChapterLoad(params: {
 
 function useReadingWindow(params: {
   aid: string;
+  readTitle?: string;
+  coverUrl?: string;
   startPage?: number;
   imagesLength: number;
   effectiveScale: number;
@@ -1004,8 +1010,8 @@ function useReadingWindow(params: {
             const entry: ReadProgress = {
               aid: params.aid,
               updatedAt: Date.now(),
-              title: undefined,
-              coverUrl: undefined,
+              title: params.readTitle,
+              coverUrl: params.coverUrl,
               chapterId: params.chapterMeta.chapterId,
               chapterSort: params.chapterMeta.chapterSort,
               chapterName: params.chapterMeta.chapterName,
@@ -1043,9 +1049,11 @@ function useReadingWindow(params: {
     params.chapterMeta.chapterId,
     params.chapterMeta.chapterName,
     params.chapterMeta.chapterSort,
+    params.coverUrl,
     params.imagesLength,
     params.overscan,
     params.pageIndexRef,
+    params.readTitle,
   ]);
 
   useEffect(() => {
@@ -1214,6 +1222,41 @@ export default function ReadingPage(props: {
   const coverUrl = useMemo(() => {
     return `${getImgBase()}/media/albums/${rootAid}_3x4.jpg`;
   }, [rootAid]);
+
+  useEffect(() => {
+    if (!rootAid) return;
+    const entry: ReadProgress = {
+      aid: props.aid,
+      updatedAt: Date.now(),
+      title: localFavTitle,
+      coverUrl,
+      chapterId: chapterMeta.chapterId,
+      chapterSort: chapterMeta.chapterSort,
+      chapterName: chapterMeta.chapterName,
+      pageIndex: pageIndexRef.current ?? 1,
+    };
+    try {
+      upsertReadProgress(entry);
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("api_read_progress_upsert", { entry });
+        } catch {
+          // ignore
+        }
+      })();
+    } catch {
+      // ignore
+    }
+  }, [
+    chapterMeta.chapterId,
+    chapterMeta.chapterName,
+    chapterMeta.chapterSort,
+    coverUrl,
+    localFavTitle,
+    props.aid,
+    rootAid,
+  ]);
 
   const handleToggleLocalFav = useCallback(() => {
     void (async () => {
@@ -1510,6 +1553,8 @@ export default function ReadingPage(props: {
         <ReadingImageList
           aid={props.aid}
           chapterId={props.chapterId}
+          readTitle={localFavTitle}
+          coverUrl={coverUrl}
           startPage={props.startPage}
           images={images}
           segmentNums={segmentNums}

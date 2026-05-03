@@ -188,6 +188,10 @@ struct ReadProgressEntry {
     aid: String,
     updated_at: i64,
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    cover_url: Option<String>,
+    #[serde(default)]
     chapter_id: Option<String>,
     #[serde(default)]
     chapter_sort: Option<String>,
@@ -1420,6 +1424,20 @@ async fn api_read_progress_clear(aid: String) -> Result<(), String> {
         .map_err(|e| format!("delete read progress failed: {e}"))?;
     let _ = tree.flush();
     Ok(())
+}
+
+#[tauri::command]
+async fn api_read_progress_list() -> Result<Vec<ReadProgressEntry>, String> {
+    let tree = read_progress_tree()?;
+    let mut out = Vec::new();
+    for item in tree.iter() {
+        let (_, val) = item.map_err(|e| format!("sled iter failed: {e}"))?;
+        if let Ok(entry) = serde_json::from_slice::<ReadProgressEntry>(&val) {
+            out.push(entry);
+        }
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(out)
 }
 
 #[tauri::command]
@@ -4677,6 +4695,7 @@ pub fn run() {
             app_update_download,
             api_read_progress_upsert,
             api_read_progress_clear,
+            api_read_progress_list,
             api_read_progress_export,
             api_read_progress_import,
             api_follow_state_list,
