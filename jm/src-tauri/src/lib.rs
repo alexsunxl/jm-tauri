@@ -173,6 +173,8 @@ struct ReadCacheComicStats {
     files: u64,
     bytes: u64,
     updated_at: i64,
+    #[serde(default)]
+    newest_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -988,9 +990,10 @@ fn parse_toastr_message(html: &str) -> (bool, String) {
     (false, String::new())
 }
 
-fn scan_dir_bytes(path: &std::path::Path) -> (u64, u64) {
+fn scan_dir_bytes(path: &std::path::Path) -> (u64, u64, i64) {
     let mut files = 0u64;
     let mut bytes = 0u64;
+    let mut newest_ms = 0i64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
@@ -1005,11 +1008,16 @@ fn scan_dir_bytes(path: &std::path::Path) -> (u64, u64) {
                 } else if meta.is_file() {
                     files += 1;
                     bytes += meta.len();
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(ms) = modified.duration_since(std::time::UNIX_EPOCH) {
+                            newest_ms = newest_ms.max(ms.as_millis() as i64);
+                        }
+                    }
                 }
             }
         }
     }
-    (files, bytes)
+    (files, bytes, newest_ms)
 }
 
 fn scan_read_cache_dirs(read_dir: &std::path::Path) -> Vec<ReadCacheDirStats> {
@@ -1082,7 +1090,7 @@ fn update_read_cache_stats(app: tauri::AppHandle) -> Result<(), String> {
                 continue;
             }
             let aid = entry.file_name().to_string_lossy().to_string();
-            let (files, bytes) = scan_dir_bytes(&path);
+            let (files, bytes, newest_ms) = scan_dir_bytes(&path);
             if files == 0 {
                 continue;
             }
@@ -1094,6 +1102,7 @@ fn update_read_cache_stats(app: tauri::AppHandle) -> Result<(), String> {
                 files,
                 bytes,
                 updated_at,
+                newest_ms,
             });
         }
     }
@@ -1115,6 +1124,7 @@ fn update_read_cache_stats(app: tauri::AppHandle) -> Result<(), String> {
     let comics_tree = db
         .open_tree("read_cache_comics")
         .map_err(|e| format!("open cache comics tree failed: {e}"))?;
+    comics_tree.clear().map_err(|e| format!("clear cache comics tree failed: {e}"))?;
 
     summary_tree
         .insert("summary", serde_json::to_vec(&summary).map_err(|e| format!("encode summary failed: {e}"))?)
@@ -3037,6 +3047,41 @@ fn api_read_cache_stats() -> Result<ReadCacheStats, String> {
 }
 
 #[tauri::command]
+fn api_read_cache_list(app: tauri::AppHandle) -> Result<Vec<ReadCacheComicStats>, String> {
+    update_read_cache_stats(app)?;
+    let data_dir = resolve_data_dir()?;
+    let db = sled::open(data_dir.join("cache-stats.sled"))
+        .map_err(|e| format!("open cache stats db failed: {e}"))?;
+    let comics_tree = db
+        .open_tree("read_cache_comics")
+        .map_err(|e| format!("open cache comics tree failed: {e}"))?;
+    let mut out = Vec::new();
+    for item in comics_tree.iter() {
+        let (_, val) = item.map_err(|e| format!("sled iter failed: {e}"))?;
+        if let Ok(entry) = serde_json::from_slice::<ReadCacheComicStats>(&val) {
+            out.push(entry);
+        }
+    }
+    out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    Ok(out)
+}
+
+#[tauri::command]
+fn api_read_cache_remove(app: tauri::AppHandle, aid: String) -> Result<ReadCacheStats, String> {
+    let trimmed = aid.trim();
+    if trimmed.is_empty() {
+        return Err("aid is empty".to_string());
+    }
+    let base = resolve_read_cache_dir(&app)?;
+    let dir = base.join("read").join(sanitize_path_component(trimmed));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("remove cache failed: {e}"))?;
+    }
+    update_read_cache_stats(app.clone())?;
+    api_read_cache_stats()
+}
+
+#[tauri::command]
 fn api_read_cache_refresh(app: tauri::AppHandle) -> Result<(), String> {
     update_read_cache_stats(app)
 }
@@ -4710,6 +4755,8 @@ pub fn run() {
             api_comment_send,
             api_categories,
             api_read_cache_stats,
+            api_read_cache_list,
+            api_read_cache_remove,
             api_read_cache_refresh,
             api_read_cache_cleanup,
             api_register_captcha,

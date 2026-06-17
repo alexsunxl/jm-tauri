@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import useSWR from "swr";
-import { Loader2 } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 
 import type { Session } from "../auth/session";
 import { isAuthExpiredError } from "../auth/errors";
@@ -202,6 +202,26 @@ function albumCoverUrl(aid: string) {
   return `${getImgBase()}/media/albums/${aid}_3x4.jpg`;
 }
 
+function normalizeImgUrl(p: string, chapterId: string) {
+  if (!p) return "";
+  if (p.startsWith("http://") || p.startsWith("https://")) return p;
+  const base = getImgBase();
+  if (p.startsWith("/")) return `${base}${p}`;
+  return `${base}/media/photos/${chapterId}/${p}`;
+}
+
+function numKey(s: string): number | null {
+  const m = s.match(/\d+/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function pictureNameFromPath(p: string): string {
+  const base = p.split("/").pop() ?? p;
+  return base.split(".")[0] ?? "";
+}
+
 export default function ComicDetailPage(props: {
   session: Session;
   aid: string;
@@ -222,6 +242,8 @@ export default function ComicDetailPage(props: {
   const [progress, setProgress] = useState<ReadProgress | null>(() => getReadProgress(props.aid));
   const [comicPageCount, setComicPageCount] = useState<number | null>(null);
   const [comicPageLoading, setComicPageLoading] = useState(false);
+  const [cacheDownloading, setCacheDownloading] = useState(false);
+  const [cacheProgress, setCacheProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
   const [commentPage, setCommentPage] = useState(1);
   const [commentInput, setCommentInput] = useState("");
   const [commentReplyTo, setCommentReplyTo] = useState<CommentItem | null>(null);
@@ -532,6 +554,64 @@ export default function ComicDetailPage(props: {
     }
   }, [album?.name, authorText, coverUrl, rootAid, showToast]);
 
+  const cacheAll = useCallback(async () => {
+    if (!album || chapters.length === 0) return;
+    setCacheDownloading(true);
+    setCacheProgress({ done: 0, total: 0, failed: 0 });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      let done = 0;
+      let failed = 0;
+      let total = 0;
+      for (const chapter of chapters) {
+        const chapterId = toId(chapter.id) || rootAid;
+        if (!chapterId) continue;
+        const [raw, scramble] = await Promise.all([
+          invoke<any>("api_chapter", { id: chapterId, cookies: props.session.cookies }),
+          invoke<number>("api_chapter_scramble_id", { id: chapterId }).catch(() => 220980),
+        ]);
+        const imagePaths = Array.isArray(raw?.images) ? raw.images.filter((x: unknown): x is string => typeof x === "string") : [];
+        const sorted = [...imagePaths].sort((a, b) => {
+          const na = numKey(a);
+          const nb = numKey(b);
+          if (na == null && nb == null) return a.localeCompare(b);
+          if (na == null) return 1;
+          if (nb == null) return -1;
+          return na - nb;
+        });
+        const nums = await invoke<number[]>("api_segmentation_nums", {
+          epsId: chapterId,
+          scrambleId: scramble,
+          pictureNames: sorted.map(pictureNameFromPath),
+        });
+        total += sorted.length;
+        setCacheProgress({ done, total, failed });
+        for (let i = 0; i < sorted.length; i += 1) {
+          try {
+            await invoke<string>("api_image_descramble_file", {
+              url: normalizeImgUrl(sorted[i], chapterId),
+              num: nums[i] ?? 0,
+              aid: props.aid,
+              readKey: undefined,
+            });
+          } catch {
+            failed += 1;
+          } finally {
+            done += 1;
+            setCacheProgress({ done, total, failed });
+          }
+        }
+      }
+      await invoke("api_read_cache_refresh");
+      showToast({ ok: failed === 0, text: failed === 0 ? "缓存下载完成" : `缓存完成，失败 ${failed} 张` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast({ ok: false, text: `缓存失败：${msg}` });
+    } finally {
+      setCacheDownloading(false);
+    }
+  }, [album, chapters, props.aid, props.session.cookies, rootAid, showToast]);
+
   const sendComment = useCallback(async () => {
     const text = commentInput.trim();
     if (!text) {
@@ -608,6 +688,19 @@ export default function ComicDetailPage(props: {
             </button>
             <Button
               className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+              disabled={cacheDownloading || !album}
+              loading={cacheDownloading}
+              onClick={cacheAll}
+            >
+              <span className="inline-flex items-center gap-1">
+                {!cacheDownloading ? <Download className="h-4 w-4" /> : null}
+                {cacheDownloading && cacheProgress
+                  ? `缓存 ${cacheProgress.done}/${cacheProgress.total || "?"}`
+                  : "一键缓存"}
+              </span>
+            </Button>
+            <Button
+              className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
               disabled={toggleBusy || !album}
               loading={toggleBusy}
               onClick={toggleFavorite}
@@ -621,6 +714,13 @@ export default function ComicDetailPage(props: {
 	          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-red-600 shadow-sm">
 	            {errorText}
 	          </div>
+        ) : null}
+
+        {cacheDownloading && cacheProgress ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
+            正在缓存：{cacheProgress.done}/{cacheProgress.total || "?"}
+            {cacheProgress.failed ? ` · 失败 ${cacheProgress.failed}` : ""}
+          </div>
         ) : null}
 
         {loading ? (

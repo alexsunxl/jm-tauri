@@ -21,7 +21,7 @@ import {
   subscribeSettings,
 } from "../settings/userSettings";
 import { useToast } from "../components/Toast";
-import { Check, HelpCircle, Loader2, RefreshCw } from "lucide-react";
+import { Check, HelpCircle, Loader2, RefreshCw, Trash2 } from "lucide-react";
 
 type UpdateAssetInfo = {
   name: string;
@@ -56,6 +56,14 @@ type UpdateDownloadProgressEvent = {
 type ApiLatencyCell = {
   text: string;
   ok: boolean;
+};
+
+type ReadCacheComicStats = {
+  aid: string;
+  files: number;
+  bytes: number;
+  updatedAt: number;
+  newestMs?: number;
 };
 
 const UPDATE_DOWNLOAD_PROGRESS_EVENT = "app-update-download-progress";
@@ -101,6 +109,9 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   const [cacheError, setCacheError] = useState("");
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const [cacheCleaning, setCacheCleaning] = useState(false);
+  const [cacheDetailOpen, setCacheDetailOpen] = useState(false);
+  const [cacheItems, setCacheItems] = useState<ReadCacheComicStats[]>([]);
+  const [cacheItemDeleting, setCacheItemDeleting] = useState<Record<string, boolean>>({});
   const [cacheTipOpen, setCacheTipOpen] = useState(false);
   const cacheTipRef = useRef<HTMLDivElement | null>(null);
   const updateDownloadUrlRef = useRef("");
@@ -328,8 +339,10 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
           totalComics: number;
           updatedAt: number;
         }>("api_read_cache_stats");
+        const items = await invoke<ReadCacheComicStats[]>("api_read_cache_list");
         if (cancelled) return;
         setCacheStats(stats);
+        setCacheItems(Array.isArray(items) ? items : []);
         setCacheError("");
       } catch (e) {
         if (cancelled) return;
@@ -356,7 +369,9 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         updatedAt: number;
         elapsedMs?: number;
       }>("api_read_cache_stats");
+      const items = await invoke<ReadCacheComicStats[]>("api_read_cache_list");
       setCacheStats(stats);
+      setCacheItems(Array.isArray(items) ? items : []);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setCacheError(msg);
@@ -377,7 +392,9 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         updatedAt: number;
         elapsedMs?: number;
       }>("api_read_cache_cleanup", { maxBytes: 2 * 1024 * 1024 * 1024 });
+      const items = await invoke<ReadCacheComicStats[]>("api_read_cache_list");
       setCacheStats(stats);
+      setCacheItems(Array.isArray(items) ? items : []);
       showToast({ ok: true, text: "清理完成" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -385,6 +402,32 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       showToast({ ok: false, text: `清理失败：${msg}` });
     } finally {
       setCacheCleaning(false);
+    }
+  };
+
+  const removeCacheItem = async (aid: string) => {
+    if (!aid) return;
+    setCacheItemDeleting((prev) => ({ ...prev, [aid]: true }));
+    setCacheError("");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const stats = await invoke<{
+        totalBytes: number;
+        totalFiles: number;
+        totalComics: number;
+        updatedAt: number;
+        elapsedMs?: number;
+      }>("api_read_cache_remove", { aid });
+      const items = await invoke<ReadCacheComicStats[]>("api_read_cache_list");
+      setCacheStats(stats);
+      setCacheItems(Array.isArray(items) ? items : []);
+      showToast({ ok: true, text: `已删除 AID ${aid} 的阅读缓存` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setCacheError(msg);
+      showToast({ ok: false, text: `删除失败：${msg}` });
+    } finally {
+      setCacheItemDeleting((prev) => ({ ...prev, [aid]: false }));
     }
   };
 
@@ -473,6 +516,14 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
           >
             手动刷新
           </button>
+          <button
+            type="button"
+            className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-sm hover:bg-zinc-50 disabled:opacity-60"
+            onClick={() => setCacheDetailOpen((v) => !v)}
+            disabled={cacheRefreshing || cacheCleaning}
+          >
+            {cacheDetailOpen ? "收起详情" : "缓存详情"}
+          </button>
           <div className="relative flex items-center gap-1" ref={cacheTipRef}>
             <button
               type="button"
@@ -515,6 +566,40 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         ) : (
           <div className="text-sm text-zinc-500">加载中…</div>
         )}
+        {cacheDetailOpen ? (
+          <div className="mt-3 overflow-hidden rounded-md border border-zinc-200">
+            {cacheItems.length === 0 ? (
+              <div className="p-3 text-sm text-zinc-500">暂无阅读缓存条目</div>
+            ) : (
+              <div className="max-h-80 overflow-auto divide-y divide-zinc-100">
+                {cacheItems.map((item) => (
+                  <div key={item.aid} className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-zinc-900">AID：{item.aid}</div>
+                      <div className="truncate text-xs text-zinc-500">
+                        {formatBytes(item.bytes)} · {item.files} 个文件
+                        {item.newestMs ? ` · 最近 ${new Date(item.newestMs).toLocaleString()}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="inline-flex h-8 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 text-xs text-red-600 hover:bg-zinc-50 disabled:opacity-60"
+                      onClick={() => void removeCacheItem(item.aid)}
+                      disabled={Boolean(cacheItemDeleting[item.aid]) || cacheRefreshing || cacheCleaning}
+                    >
+                      {cacheItemDeleting[item.aid] ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      删除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="hidden md:block rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
