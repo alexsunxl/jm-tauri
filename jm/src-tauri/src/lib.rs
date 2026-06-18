@@ -177,6 +177,31 @@ struct ReadCacheComicStats {
     newest_ms: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ReadOfflineCacheMeta {
+    aid: String,
+    #[serde(default)]
+    album: Option<serde_json::Value>,
+    #[serde(default)]
+    chapters: HashMap<String, ReadOfflineChapterMeta>,
+    #[serde(default)]
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ReadOfflineChapterMeta {
+    #[serde(default)]
+    chapter: Option<serde_json::Value>,
+    #[serde(default)]
+    scramble_id: Option<i64>,
+    #[serde(default)]
+    segment_nums: Vec<i64>,
+    #[serde(default)]
+    updated_at: i64,
+}
+
 #[derive(Debug, Clone)]
 struct ReadCacheDirStats {
     aid: String,
@@ -1064,6 +1089,63 @@ fn scan_read_cache_dirs(read_dir: &std::path::Path) -> Vec<ReadCacheDirStats> {
         out.push(ReadCacheDirStats { aid, bytes, newest_ms });
     }
     out
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn read_offline_meta_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    aid: &str,
+) -> Result<std::path::PathBuf, String> {
+    let trimmed = aid.trim();
+    if trimmed.is_empty() {
+        return Err("aid is empty".to_string());
+    }
+    let base = resolve_read_cache_dir(app)?;
+    Ok(base
+        .join("read")
+        .join(sanitize_path_component(trimmed))
+        .join("offline-meta.json"))
+}
+
+fn load_read_offline_meta<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    aid: &str,
+) -> Result<Option<ReadOfflineCacheMeta>, String> {
+    let path = read_offline_meta_path(app, aid)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("read offline cache meta failed: {e}"))?;
+    let meta = serde_json::from_slice::<ReadOfflineCacheMeta>(&bytes)
+        .map_err(|e| format!("decode offline cache meta failed: {e}"))?;
+    Ok(Some(meta))
+}
+
+fn save_read_offline_meta<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    aid: &str,
+    meta: &ReadOfflineCacheMeta,
+) -> Result<(), String> {
+    let path = read_offline_meta_path(app, aid)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir offline cache meta failed: {e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(meta).map_err(|e| format!("encode offline cache meta failed: {e}"))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write offline cache meta failed: {e}"))?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("replace offline cache meta failed: {e}")),
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("commit offline cache meta failed: {e}"))?;
+    Ok(())
 }
 
 fn update_read_cache_stats(app: tauri::AppHandle) -> Result<(), String> {
@@ -3047,6 +3129,62 @@ fn api_read_cache_stats() -> Result<ReadCacheStats, String> {
 }
 
 #[tauri::command]
+fn api_read_offline_cache_get(
+    app: tauri::AppHandle,
+    aid: String,
+) -> Result<Option<ReadOfflineCacheMeta>, String> {
+    load_read_offline_meta(&app, &aid)
+}
+
+#[tauri::command]
+fn api_read_offline_cache_upsert_album(
+    app: tauri::AppHandle,
+    aid: String,
+    album: serde_json::Value,
+) -> Result<(), String> {
+    let mut meta = load_read_offline_meta(&app, &aid)?.unwrap_or_else(|| ReadOfflineCacheMeta {
+        aid: aid.trim().to_string(),
+        ..ReadOfflineCacheMeta::default()
+    });
+    meta.aid = aid.trim().to_string();
+    meta.album = Some(album);
+    meta.updated_at = now_unix_ms();
+    save_read_offline_meta(&app, &aid, &meta)
+}
+
+#[tauri::command]
+fn api_read_offline_cache_upsert_chapter(
+    app: tauri::AppHandle,
+    aid: String,
+    chapter_id: String,
+    chapter: serde_json::Value,
+    scramble_id: Option<i64>,
+    segment_nums: Vec<i64>,
+) -> Result<(), String> {
+    let chapter_id = chapter_id.trim().to_string();
+    if chapter_id.is_empty() {
+        return Err("chapter id is empty".to_string());
+    }
+    let mut meta = load_read_offline_meta(&app, &aid)?.unwrap_or_else(|| ReadOfflineCacheMeta {
+        aid: aid.trim().to_string(),
+        ..ReadOfflineCacheMeta::default()
+    });
+    meta.aid = aid.trim().to_string();
+    let now = now_unix_ms();
+    meta.chapters.insert(
+        chapter_id,
+        ReadOfflineChapterMeta {
+            chapter: Some(chapter),
+            scramble_id,
+            segment_nums,
+            updated_at: now,
+        },
+    );
+    meta.updated_at = now;
+    save_read_offline_meta(&app, &aid, &meta)
+}
+
+#[tauri::command]
 fn api_read_cache_list(app: tauri::AppHandle) -> Result<Vec<ReadCacheComicStats>, String> {
     update_read_cache_stats(app)?;
     let data_dir = resolve_data_dir()?;
@@ -4755,6 +4893,9 @@ pub fn run() {
             api_comment_send,
             api_categories,
             api_read_cache_stats,
+            api_read_offline_cache_get,
+            api_read_offline_cache_upsert_album,
+            api_read_offline_cache_upsert_chapter,
             api_read_cache_list,
             api_read_cache_remove,
             api_read_cache_refresh,

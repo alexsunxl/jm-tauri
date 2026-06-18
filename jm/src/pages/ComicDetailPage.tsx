@@ -11,6 +11,7 @@ import { getImgBase } from "../config/endpoints";
 import { clearReadProgress, getReadProgress, upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import Loading from "../components/Loading";
+import CoverImage from "../components/CoverImage";
 
 type Album = {
   id: string | number;
@@ -35,6 +36,20 @@ type ComicExtraEntry = {
   id: string;
   pageCount: number;
   updatedAt: number;
+};
+
+type OfflineChapterMeta = {
+  chapter?: unknown | null;
+  scrambleId?: number | null;
+  segmentNums?: number[];
+  updatedAt?: number;
+};
+
+type OfflineCacheMeta = {
+  aid: string;
+  album?: unknown | null;
+  chapters?: Record<string, OfflineChapterMeta>;
+  updatedAt?: number;
 };
 
 type CommentExpInfo = {
@@ -238,7 +253,7 @@ export default function ComicDetailPage(props: {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [localFavBusy, setLocalFavBusy] = useState(false);
   const [isLocalFav, setIsLocalFav] = useState(false);
-  const [coverBroken, setCoverBroken] = useState(false);
+  const [usingOfflineAlbum, setUsingOfflineAlbum] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(() => getReadProgress(props.aid));
   const [comicPageCount, setComicPageCount] = useState<number | null>(null);
   const [comicPageLoading, setComicPageLoading] = useState(false);
@@ -261,7 +276,27 @@ export default function ComicDetailPage(props: {
     ["album", props.aid, props.session.cookies],
     async ([, aid, cookies]) => {
       const { invoke } = await import("@tauri-apps/api/core");
-      return invoke<unknown>("api_album", { id: aid, cookies });
+      const cacheAid = String(aid);
+      try {
+        const raw = await invoke<unknown>("api_album", { id: aid, cookies });
+        setUsingOfflineAlbum(false);
+        void invoke("api_read_offline_cache_upsert_album", {
+          aid: cacheAid,
+          album: raw,
+        }).catch(() => {
+          // ignore offline metadata write failures
+        });
+        return raw;
+      } catch (e) {
+        const cached = await invoke<OfflineCacheMeta | null>("api_read_offline_cache_get", {
+          aid: cacheAid,
+        }).catch(() => null);
+        if (cached?.album) {
+          setUsingOfflineAlbum(true);
+          return cached.album;
+        }
+        throw e;
+      }
     },
     {
       revalidateOnFocus: false,
@@ -296,7 +331,7 @@ export default function ComicDetailPage(props: {
     isValidating: commentValidating,
     mutate: mutateComments,
   } = useSWR(
-    rootAid ? ["comments", rootAid, commentPage, props.session.cookies] : null,
+    album && rootAid && !usingOfflineAlbum ? ["comments", rootAid, commentPage, props.session.cookies] : null,
     async ([, aid, page, cookies]) => {
       const { invoke } = await import("@tauri-apps/api/core");
       return invoke<any>("api_comments", {
@@ -317,7 +352,7 @@ export default function ComicDetailPage(props: {
   );
 
   useEffect(() => {
-    setCoverBroken(false);
+    setUsingOfflineAlbum(false);
     setProgress(getReadProgress(props.aid));
   }, [props.aid]);
 
@@ -560,6 +595,14 @@ export default function ComicDetailPage(props: {
     setCacheProgress({ done: 0, total: 0, failed: 0 });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      const cacheAid = props.aid;
+      void invoke("api_cover_cache", { url: coverUrl }).catch(() => {
+        // best-effort cover cache for offline detail display
+      });
+      await invoke("api_read_offline_cache_upsert_album", {
+        aid: cacheAid,
+        album,
+      });
       let done = 0;
       let failed = 0;
       let total = 0;
@@ -584,6 +627,13 @@ export default function ComicDetailPage(props: {
           scrambleId: scramble,
           pictureNames: sorted.map(pictureNameFromPath),
         });
+        await invoke("api_read_offline_cache_upsert_chapter", {
+          aid: cacheAid,
+          chapterId,
+          chapter: raw,
+          scrambleId: scramble,
+          segmentNums: nums,
+        });
         total += sorted.length;
         setCacheProgress({ done, total, failed });
         for (let i = 0; i < sorted.length; i += 1) {
@@ -591,7 +641,7 @@ export default function ComicDetailPage(props: {
             await invoke<string>("api_image_descramble_file", {
               url: normalizeImgUrl(sorted[i], chapterId),
               num: nums[i] ?? 0,
-              aid: props.aid,
+              aid: cacheAid,
               readKey: undefined,
             });
           } catch {
@@ -610,7 +660,7 @@ export default function ComicDetailPage(props: {
     } finally {
       setCacheDownloading(false);
     }
-  }, [album, chapters, props.aid, props.session.cookies, rootAid, showToast]);
+  }, [album, chapters, coverUrl, props.aid, props.session.cookies, rootAid, showToast]);
 
   const sendComment = useCallback(async () => {
     const text = commentInput.trim();
@@ -662,8 +712,15 @@ export default function ComicDetailPage(props: {
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex max-w-[520px] min-w-0 flex-col">
-            <div className="break-words text-base font-semibold text-zinc-900">
-              {title}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="break-words text-base font-semibold text-zinc-900">
+                {title}
+              </div>
+              {usingOfflineAlbum ? (
+                <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700">
+                  离线缓存
+                </span>
+              ) : null}
             </div>
             <div className="break-words text-sm text-zinc-600">
               {authorText ? `作者：${authorText}` : null}
@@ -734,19 +791,11 @@ export default function ComicDetailPage(props: {
             <div className="flex flex-col gap-3">
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 text-sm font-medium text-zinc-900">封面</div>
-                {!coverBroken ? (
-                  <img
-                    src={coverUrl}
-                    alt={title}
-                    className="w-full rounded-md border border-zinc-200 bg-zinc-50 object-cover"
-                    onError={() => setCoverBroken(true)}
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex aspect-[3/4] w-full items-center justify-center rounded-md border border-dashed border-zinc-200 bg-zinc-50 text-sm text-zinc-500">
-                    封面加载失败
-                  </div>
-                )}
+                <CoverImage
+                  src={coverUrl}
+                  alt={title}
+                  className="w-full rounded-md border border-zinc-200 bg-zinc-50 object-cover"
+                />
               </div>
 
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">

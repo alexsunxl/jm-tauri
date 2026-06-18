@@ -394,6 +394,20 @@ type Chapter = {
 
 type ChapterNavItem = { id: string | number; sort?: string | number; name?: string };
 
+type OfflineChapterMeta = {
+  chapter?: unknown | null;
+  scrambleId?: number | null;
+  segmentNums?: number[];
+  updatedAt?: number;
+};
+
+type OfflineCacheMeta = {
+  aid: string;
+  album?: unknown | null;
+  chapters?: Record<string, OfflineChapterMeta>;
+  updatedAt?: number;
+};
+
 type ChapterMeta = {
   chapterId: string;
   chapterSort?: string;
@@ -839,6 +853,15 @@ function useChapterLoad(params: {
       setChapter(raw as Chapter);
       setScrambleId(scramble);
       setSegmentNums(null);
+      void invoke("api_read_offline_cache_upsert_chapter", {
+        aid: params.aid,
+        chapterId: params.chapterId,
+        chapter: raw,
+        scrambleId: scramble,
+        segmentNums: [],
+      }).catch(() => {
+        // ignore offline metadata write failures
+      });
 
       const entry: ReadProgress = {
         aid: params.aid,
@@ -865,6 +888,21 @@ function useChapterLoad(params: {
       }
     } catch (e) {
       if (token !== chapterLoadToken.current) return;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const cached = await invoke<OfflineCacheMeta | null>("api_read_offline_cache_get", {
+          aid: params.aid,
+        });
+        const cachedChapter = cached?.chapters?.[params.chapterId];
+        if (cachedChapter?.chapter) {
+          setChapter(cachedChapter.chapter as Chapter);
+          setScrambleId(cachedChapter.scrambleId ?? 220980);
+          setSegmentNums(cachedChapter.segmentNums?.length ? cachedChapter.segmentNums : null);
+          return;
+        }
+      } catch {
+        // fall through to the original error
+      }
       const msg = e instanceof Error ? e.message : String(e);
       params.showToast({ ok: false, text: `章节加载失败：${msg}` });
       setChapter(null);
@@ -889,6 +927,7 @@ function useChapterLoad(params: {
 
   useEffect(() => {
     if (!images.length || scrambleId == null) return;
+    if (segmentNums?.length === images.length) return;
     let cancelled = false;
     const run = async () => {
       try {
@@ -900,6 +939,17 @@ function useChapterLoad(params: {
         });
         if (cancelled) return;
         setSegmentNums(nums);
+        if (chapter) {
+          void invoke("api_read_offline_cache_upsert_chapter", {
+            aid: params.aid,
+            chapterId: params.chapterId,
+            chapter,
+            scrambleId,
+            segmentNums: nums,
+          }).catch(() => {
+            // ignore offline metadata write failures
+          });
+        }
       } catch {
         if (cancelled) return;
         setSegmentNums(images.map(() => 0));
@@ -909,7 +959,7 @@ function useChapterLoad(params: {
     return () => {
       cancelled = true;
     };
-  }, [images, params.chapterId, scrambleId]);
+  }, [chapter, images, params.aid, params.chapterId, scrambleId, segmentNums]);
 
   return { chapter, images, loading, scrambleId, scrambleError, segmentNums, loadChapter };
 }
