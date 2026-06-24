@@ -25,6 +25,27 @@ test("search input stays editable during IME composition and returns results", a
   await expect(page.getByText("长十郎大战黑土")).toBeVisible();
 });
 
+test("desktop reader shortcuts show menu and navigate back", async ({ page }) => {
+  await installTauriMock(page);
+
+  await page.goto("/#/reading/123/456?ct=Desktop%20Reader");
+
+  const menu = page.locator(".fixed.left-0.right-0.bottom-0.z-50");
+  await expect(menu).toHaveClass(/opacity-0/);
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveClass(/opacity-100/);
+
+  await page.keyboard.press("Backspace");
+  await expect(page).toHaveURL(/\/#\/detail\/123$/);
+
+  const cancelCalls = await page.evaluate(() => {
+    const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+    return calls.filter((x) => x.cmd === "api_read_cancel").length;
+  });
+  expect(cancelCalls).toBeGreaterThan(0);
+});
+
 test("local favorites filter/sort tabs persist in localStorage", async ({ page }) => {
   await installTauriMock(page, {
     favorites: [

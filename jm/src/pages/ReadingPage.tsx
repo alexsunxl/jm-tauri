@@ -542,6 +542,12 @@ function toId(v: unknown): string {
   return "";
 }
 
+function isEditingKeyTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName);
+}
+
 function toAuthorText(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number") return String(v);
@@ -1504,6 +1510,34 @@ export default function ReadingPage(props: {
     //   setHeaderVisible(false);
     // }, 2500);
   }, []);
+
+  const showMenu = useCallback(() => {
+    setHeaderVisible(true);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || isEditingKeyTarget(e.target)) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        showMenu();
+        return;
+      }
+      if (
+        e.key === "Backspace" &&
+        !e.repeat &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey
+      ) {
+        e.preventDefault();
+        handleBack();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleBack, showMenu]);
 
   return (
     <ReadingPullContainer

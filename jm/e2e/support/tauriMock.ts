@@ -292,8 +292,32 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
             series: [{ id: aid, sort: 1, name: "第1话" }],
           };
         }
+        case "api_chapter": {
+          const id = String(args?.id ?? "1");
+          return {
+            id,
+            series_id: id,
+            name: "mock chapter",
+            series: [{ id, sort: 1, name: "mock chapter" }],
+            images: ["00001.jpg"],
+          };
+        }
+        case "api_chapter_scramble_id": {
+          return 220980;
+        }
+        case "api_segmentation_nums": {
+          const pictureNames = Array.isArray(args?.pictureNames) ? args.pictureNames : [];
+          return pictureNames.map(() => 0);
+        }
+        case "api_image_descramble_file": {
+          return "/tmp/mock-reader-image.jpg";
+        }
+        case "api_local_favorite_has": {
+          return false;
+        }
         case "api_read_progress_upsert":
         case "api_read_progress_clear":
+        case "api_read_cancel":
         case "api_read_cache_refresh":
         case "api_read_cache_cleanup":
         case "api_config_set_socks_proxy":
