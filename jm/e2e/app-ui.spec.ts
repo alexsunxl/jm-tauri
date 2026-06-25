@@ -2,6 +2,25 @@ import { expect, test } from "@playwright/test";
 
 import { installTauriMock } from "./support/tauriMock";
 
+test("home latest updates render as cards and open detail", async ({ page }) => {
+  await installTauriMock(page, {
+    latestItems: [
+      { id: "50001", name: "Recent Alpha", author: "Home Author", category: { title: "短篇" } },
+      { aid: "50002", title: "Recent Beta", authors: ["Author B"] },
+    ],
+  });
+
+  await page.goto("/#/home/home");
+
+  await expect(page.getByText("Recent Alpha", { exact: true })).toBeVisible();
+  await expect(page.getByText("作者：Home Author", { exact: true })).toBeVisible();
+  await expect(page.getByText("AID：50001", { exact: true })).toBeVisible();
+
+  await page.getByText("Recent Alpha", { exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/detail\/50001$/);
+  await expect(page.getByText("AID 50001", { exact: true })).toBeVisible();
+});
+
 test("search input stays editable during IME composition and returns results", async ({ page }) => {
   await installTauriMock(page, {
     searchItems: [

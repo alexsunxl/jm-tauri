@@ -16,9 +16,13 @@ type MockSearchItem = {
   author: string;
 };
 
+type MockLatestItem = Record<string, unknown>;
+
 type MockOptions = {
   favorites?: MockFavorite[];
   searchItems?: MockSearchItem[];
+  latestItems?: MockLatestItem[];
+  promoteBlocks?: unknown[];
   followAids?: string[];
   readProgress?: Record<string, { updatedAt: number; chapterId?: string; pageIndex?: number }>;
   appVersion?: string;
@@ -45,6 +49,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
   await page.addInitScript((payload: MockOptions) => {
     const favorites = Array.isArray(payload.favorites) ? payload.favorites : [];
     const searchItems = Array.isArray(payload.searchItems) ? payload.searchItems : [];
+    const latestItems = Array.isArray(payload.latestItems) ? payload.latestItems : [];
+    const promoteBlocks = Array.isArray(payload.promoteBlocks) ? payload.promoteBlocks : [];
     const followAids = Array.isArray(payload.followAids) ? payload.followAids : [];
     const readProgress = payload.readProgress ?? {};
     const appVersion =
@@ -144,6 +150,15 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const invoke = async (cmd: string, args?: Record<string, unknown>) => {
       (window as any).__mockInvokeCalls.push({ cmd, args: args ?? {} });
       switch (cmd) {
+        case "api_latest": {
+          return {
+            total: latestItems.length,
+            content: latestItems,
+          };
+        }
+        case "api_promote": {
+          return promoteBlocks;
+        }
         case "api_search": {
           return {
             total: searchItems.length,

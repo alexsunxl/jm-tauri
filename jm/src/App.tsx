@@ -183,7 +183,7 @@ function HomeLayout(props: {
             <Routes>
               <Route
                 path="home"
-                element={<HomePage session={props.session} onAuthExpired={props.onAuthExpired} />}
+                element={<HomeRoute session={props.session} onAuthExpired={props.onAuthExpired} />}
               />
               <Route
                 path="favorites"
@@ -220,6 +220,18 @@ function HomeLayout(props: {
       </div>
     </div>
   );
+}
+
+function HomeRoute(props: { session: Session; onAuthExpired: () => void }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const fromPath = `${location.pathname}${location.search}`;
+  const openComic = useCallback(
+    (aid: string) => navigate(`/detail/${aid}`, { state: { fromPath } }),
+    [fromPath, navigate],
+  );
+
+  return <HomePage session={props.session} onAuthExpired={props.onAuthExpired} onOpenComic={openComic} />;
 }
 
 function FavoritesRoute(props: { session: Session; onAuthExpired: () => void }) {
