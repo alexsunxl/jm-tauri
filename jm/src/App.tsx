@@ -134,6 +134,17 @@ function LoginRoute(props: { session: Session | null; onLoggedIn: (s: Session) =
   );
 }
 
+function clearBackendSession(): void {
+  void (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("api_session_clear");
+    } catch {
+      // ignore
+    }
+  })();
+}
+
 function HomeLayout(props: {
   session: Session;
   onLogout: () => void;
@@ -420,12 +431,14 @@ function AppRoutes() {
 
   const onLogout = useCallback(() => {
     clearSession();
+    clearBackendSession();
     setSession(null);
   }, []);
 
   const onAuthExpired = useCallback(() => {
     autoLoginAttemptedRef.current = false;
     clearSession();
+    clearBackendSession();
     setSession(null);
   }, []);
 

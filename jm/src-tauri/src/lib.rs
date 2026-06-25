@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{atomic::AtomicUsize, OnceLock};
 use std::sync::{Arc, Mutex};
-use std::sync::{OnceLock, atomic::AtomicUsize};
 use std::time::{Duration, Instant};
 
 use aes::Aes256;
@@ -28,11 +28,8 @@ static READ_PROGRESS_DB: OnceLock<Result<sled::Db, String>> = OnceLock::new();
 
 const JM_HEADER_VER: &str = "1.7.5";
 const JM_APP_VERSION: &str = "2.0.6";
-// const JM_API_BASE_DEFAULT: &str = "https://www.jmapiproxyxxx.vip";
 const JM_API_BASE_DEFAULT: &str = "https://www.cdnhth.club";
-const JM_API_BASE_LIST_DEFAULT: &[&str] = &[
-            "www.cdngwc.cc",
-];
+const JM_API_BASE_LIST_DEFAULT: &[&str] = &["www.cdngwc.cc"];
 const JM_API_DOMAIN_SERVER_LIST: &[&str] = &[
     "https://rup4a04-c01.tos-ap-southeast-1.bytepluses.com/newsvr-2025.txt",
     "https://rup4a04-c02.tos-cn-hongkong.bytepluses.com/newsvr-2025.txt",
@@ -101,6 +98,12 @@ struct AppConfig {
     session_cookies: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicAppConfig {
+    socks_proxy: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalFavoriteItem {
@@ -118,11 +121,11 @@ struct LocalFavoriteItem {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ReadCacheStats {
-  total_bytes: u64,
-  total_files: u64,
-  total_comics: u64,
-  updated_at: i64,
-  elapsed_ms: u64,
+    total_bytes: u64,
+    total_files: u64,
+    total_comics: u64,
+    updated_at: i64,
+    elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -344,9 +347,7 @@ impl LocalFavoritesStore {
         };
 
         let db_dir = base_dir.join("local-favorites.sled");
-        match sled::open(&db_dir)
-            .and_then(|db| db.open_tree("local_favorites").map(|t| (db, t)))
-        {
+        match sled::open(&db_dir).and_then(|db| db.open_tree("local_favorites").map(|t| (db, t))) {
             Ok((_db, tree)) => {
                 logl!("[tauri][localfav] sled opened at {:?}", db_dir);
                 Self {
@@ -366,9 +367,11 @@ impl LocalFavoritesStore {
     }
 
     fn tree(&self) -> Result<&sled::Tree, String> {
-        self.tree
-            .as_ref()
-            .ok_or_else(|| self.init_error.clone().unwrap_or_else(|| "local favorites store unavailable".into()))
+        self.tree.as_ref().ok_or_else(|| {
+            self.init_error
+                .clone()
+                .unwrap_or_else(|| "local favorites store unavailable".into())
+        })
     }
 }
 
@@ -458,7 +461,8 @@ impl CancelRegistry {
             return;
         }
         // Remove oldest entries first.
-        let mut keys: Vec<(String, i64)> = map.iter().map(|(k, (_, ts))| (k.clone(), *ts)).collect();
+        let mut keys: Vec<(String, i64)> =
+            map.iter().map(|(k, (_, ts))| (k.clone(), *ts)).collect();
         keys.sort_by_key(|(_, ts)| *ts);
         for (k, _) in keys.into_iter().take(map.len().saturating_sub(MAX)) {
             map.remove(&k);
@@ -512,7 +516,9 @@ fn log_file_path() -> std::path::PathBuf {
         .and_then(|p| p.parent().map(|x| x.to_path_buf()));
 
     let primary = exe_dir
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
         .join("jmcomic-logs")
         .join("jm.log");
 
@@ -590,16 +596,17 @@ fn get_log_writer() -> Option<&'static Mutex<LogWriter>> {
     LOG_WRITER.get_or_init(|| {
         let primary = log_file_path();
 
-        let try_open = |path: &std::path::Path| -> std::io::Result<std::io::BufWriter<std::fs::File>> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)?;
-            Ok(std::io::BufWriter::new(file))
-        };
+        let try_open =
+            |path: &std::path::Path| -> std::io::Result<std::io::BufWriter<std::fs::File>> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?;
+                Ok(std::io::BufWriter::new(file))
+            };
 
         let opened = try_open(&primary)
             .map(|w| (primary.clone(), w))
@@ -608,31 +615,36 @@ fn get_log_writer() -> Option<&'static Mutex<LogWriter>> {
                 try_open(&fallback).map(|w| (fallback, w))
             });
 
-        Mutex::new(opened.map_or_else(|_| {
-            // Last resort: /dev/null style sink, so logging doesn't panic.
-            let file = if cfg!(windows) {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open("NUL")
-                    .unwrap_or_else(|_| std::fs::File::create(std::env::temp_dir().join("jm.log")).unwrap())
-            } else {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open("/dev/null")
-                    .unwrap_or_else(|_| std::fs::File::create(std::env::temp_dir().join("jm.log")).unwrap())
-            };
-            LogWriter {
-                path: std::path::PathBuf::new(),
-                writer: std::io::BufWriter::new(file),
-                rotate_enabled: false,
-            }
-        }, |(path, w)| {
-            LogWriter {
+        Mutex::new(opened.map_or_else(
+            |_| {
+                // Last resort: /dev/null style sink, so logging doesn't panic.
+                let file = if cfg!(windows) {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("NUL")
+                        .unwrap_or_else(|_| {
+                            std::fs::File::create(std::env::temp_dir().join("jm.log")).unwrap()
+                        })
+                } else {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/dev/null")
+                        .unwrap_or_else(|_| {
+                            std::fs::File::create(std::env::temp_dir().join("jm.log")).unwrap()
+                        })
+                };
+                LogWriter {
+                    path: std::path::PathBuf::new(),
+                    writer: std::io::BufWriter::new(file),
+                    rotate_enabled: false,
+                }
+            },
+            |(path, w)| LogWriter {
                 path,
                 writer: w,
                 rotate_enabled: true,
-            }
-        }))
+            },
+        ))
     });
     Some(LOG_WRITER.get().expect("just initialized"))
 }
@@ -675,8 +687,8 @@ fn save_api_domain_cache(list: &[String]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let bytes =
-        serde_json::to_vec_pretty(list).map_err(|e| format!("serialize api domain cache failed: {e}"))?;
+    let bytes = serde_json::to_vec_pretty(list)
+        .map_err(|e| format!("serialize api domain cache failed: {e}"))?;
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write api domain cache tmp failed: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("commit api domain cache failed: {e}"))?;
     Ok(())
@@ -786,9 +798,11 @@ fn export_read_progress_zip(path: &std::path::Path) -> Result<(), String> {
         let _ = db.flush();
     }
 
-    let file = std::fs::File::create(path).map_err(|e| format!("create export file failed: {e}"))?;
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("create export file failed: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     let mut stack = vec![db_dir.clone()];
     while let Some(dir) = stack.pop() {
@@ -804,15 +818,16 @@ fn export_read_progress_zip(path: &std::path::Path) -> Result<(), String> {
             } else {
                 zip.start_file(name, options)
                     .map_err(|e| format!("zip start file failed: {e}"))?;
-                let mut f = std::fs::File::open(&path)
-                    .map_err(|e| format!("zip open file failed: {e}"))?;
+                let mut f =
+                    std::fs::File::open(&path).map_err(|e| format!("zip open file failed: {e}"))?;
                 std::io::copy(&mut f, &mut zip)
                     .map_err(|e| format!("zip write file failed: {e}"))?;
             }
         }
     }
 
-    zip.finish().map_err(|e| format!("zip finish failed: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("zip finish failed: {e}"))?;
     Ok(())
 }
 
@@ -826,27 +841,25 @@ fn import_read_progress_zip(path: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(&import_dir).map_err(|e| format!("mkdir failed: {e}"))?;
 
     let file = std::fs::File::open(path).map_err(|e| format!("open import file failed: {e}"))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("open zip failed: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("open zip failed: {e}"))?;
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("zip entry failed: {e}"))?;
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry failed: {e}"))?;
         let name = file.name().to_string();
         if name.is_empty() {
             continue;
         }
         let out_path = import_dir.join(name);
         if file.name().ends_with('/') {
-            std::fs::create_dir_all(&out_path)
-                .map_err(|e| format!("mkdir failed: {e}"))?;
+            std::fs::create_dir_all(&out_path).map_err(|e| format!("mkdir failed: {e}"))?;
         } else {
             if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("mkdir failed: {e}"))?;
+                std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
             }
-            let mut out = std::fs::File::create(&out_path)
-                .map_err(|e| format!("create file failed: {e}"))?;
-            std::io::copy(&mut file, &mut out)
-                .map_err(|e| format!("write file failed: {e}"))?;
+            let mut out =
+                std::fs::File::create(&out_path).map_err(|e| format!("create file failed: {e}"))?;
+            std::io::copy(&mut file, &mut out).map_err(|e| format!("write file failed: {e}"))?;
         }
     }
     Ok(())
@@ -874,14 +887,25 @@ fn save_config_to_disk(cfg: &AppConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let bytes = serde_json::to_vec_pretty(cfg).map_err(|e| format!("serialize config failed: {e}"))?;
+    let bytes =
+        serde_json::to_vec_pretty(cfg).map_err(|e| format!("serialize config failed: {e}"))?;
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write config tmp failed: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("commit config failed: {e}"))?;
     Ok(())
 }
 
 fn current_socks_proxy() -> Option<String> {
-    config_state().lock().ok().and_then(|c| c.socks_proxy.clone())
+    config_state()
+        .lock()
+        .ok()
+        .and_then(|c| c.socks_proxy.clone())
+}
+
+fn stored_session_cookies() -> HashMap<String, String> {
+    config_state()
+        .lock()
+        .map(|c| c.session_cookies.clone())
+        .unwrap_or_default()
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -892,7 +916,9 @@ fn http_client() -> Result<reqwest::Client, String> {
                 .proxy(reqwest::Proxy::all(&p).map_err(|e| format!("invalid proxy url: {e}"))?);
         }
     }
-    builder.build().map_err(|e| format!("create http client failed: {e}"))
+    builder
+        .build()
+        .map_err(|e| format!("create http client failed: {e}"))
 }
 
 fn extract_build_tag(version: &str) -> Option<String> {
@@ -984,13 +1010,16 @@ fn register_client() -> Result<reqwest::Client, String> {
                 .proxy(reqwest::Proxy::all(&p).map_err(|e| format!("invalid proxy url: {e}"))?);
         }
     }
-    builder.build().map_err(|e| format!("create http client failed: {e}"))
+    builder
+        .build()
+        .map_err(|e| format!("create http client failed: {e}"))
 }
 
 fn web_base_from_opt(web_base: Option<String>) -> String {
     if let Some(raw) = web_base {
         let trimmed = raw.trim();
-        if !trimmed.is_empty() && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+        if !trimmed.is_empty()
+            && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
         {
             return trimmed.trim_end_matches('/').to_string();
         }
@@ -1086,7 +1115,11 @@ fn scan_read_cache_dirs(read_dir: &std::path::Path) -> Vec<ReadCacheDirStats> {
             }
         }
 
-        out.push(ReadCacheDirStats { aid, bytes, newest_ms });
+        out.push(ReadCacheDirStats {
+            aid,
+            bytes,
+            newest_ms,
+        });
     }
     out
 }
@@ -1134,10 +1167,12 @@ fn save_read_offline_meta<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let path = read_offline_meta_path(app, aid)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir offline cache meta failed: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir offline cache meta failed: {e}"))?;
     }
     let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec(meta).map_err(|e| format!("encode offline cache meta failed: {e}"))?;
+    let bytes =
+        serde_json::to_vec(meta).map_err(|e| format!("encode offline cache meta failed: {e}"))?;
     std::fs::write(&tmp, bytes).map_err(|e| format!("write offline cache meta failed: {e}"))?;
     match std::fs::remove_file(&path) {
         Ok(()) => {}
@@ -1206,15 +1241,21 @@ fn update_read_cache_stats(app: tauri::AppHandle) -> Result<(), String> {
     let comics_tree = db
         .open_tree("read_cache_comics")
         .map_err(|e| format!("open cache comics tree failed: {e}"))?;
-    comics_tree.clear().map_err(|e| format!("clear cache comics tree failed: {e}"))?;
+    comics_tree
+        .clear()
+        .map_err(|e| format!("clear cache comics tree failed: {e}"))?;
 
     summary_tree
-        .insert("summary", serde_json::to_vec(&summary).map_err(|e| format!("encode summary failed: {e}"))?)
+        .insert(
+            "summary",
+            serde_json::to_vec(&summary).map_err(|e| format!("encode summary failed: {e}"))?,
+        )
         .map_err(|e| format!("write summary failed: {e}"))?;
 
     for item in per_comic {
         let key = item.aid.as_bytes();
-        let val = serde_json::to_vec(&item).map_err(|e| format!("encode comic stat failed: {e}"))?;
+        let val =
+            serde_json::to_vec(&item).map_err(|e| format!("encode comic stat failed: {e}"))?;
         let _ = comics_tree.insert(key, val);
     }
 
@@ -1270,7 +1311,11 @@ fn log_line(level: LogLevel, file: &str, line: u32, msg: std::fmt::Arguments<'_>
 
     if let Some(m) = get_log_writer() {
         if let Ok(mut log) = m.lock() {
-            let _ = writeln!(log.writer, "{now_ms} {} {file}:{line} {msg}", level.as_str());
+            let _ = writeln!(
+                log.writer,
+                "{now_ms} {} {file}:{line} {msg}",
+                level.as_str()
+            );
             // Reduce overhead: flush every 50 lines.
             let n = LOG_LINE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 50 == 0 {
@@ -1282,20 +1327,26 @@ fn log_line(level: LogLevel, file: &str, line: u32, msg: std::fmt::Arguments<'_>
 }
 
 #[tauri::command]
-async fn api_config_get() -> Result<AppConfig, String> {
-    Ok(config_state()
+async fn api_config_get() -> Result<PublicAppConfig, String> {
+    let cfg = config_state()
         .lock()
         .map_err(|_| "config lock poisoned".to_string())?
-        .clone())
+        .clone();
+    Ok(PublicAppConfig {
+        socks_proxy: cfg.socks_proxy,
+    })
 }
 
 #[tauri::command]
 async fn api_config_set_socks_proxy(proxy: Option<String>) -> Result<(), String> {
-    let proxy = proxy
-        .and_then(|s| {
-            let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
-        });
+    let proxy = proxy.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
 
     if let Some(p) = &proxy {
         reqwest::Proxy::all(p).map_err(|e| format!("invalid proxy url: {e}"))?;
@@ -1310,10 +1361,23 @@ async fn api_config_set_socks_proxy(proxy: Option<String>) -> Result<(), String>
 }
 
 #[tauri::command]
+async fn api_session_clear() -> Result<(), String> {
+    let mut cfg = config_state()
+        .lock()
+        .map_err(|_| "config lock poisoned".to_string())?;
+    cfg.session_cookies.clear();
+    save_config_to_disk(&cfg)?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, String> {
     let current_version = app.package_info().version.to_string();
     let current_tag = extract_build_tag(&current_version);
-    let is_release = current_tag.as_deref().map(|t| t.starts_with("jm-")).unwrap_or(false);
+    let is_release = current_tag
+        .as_deref()
+        .map(|t| t.starts_with("jm-"))
+        .unwrap_or(false);
     let client = http_client()?;
     let resp = client
         .get("https://api.github.com/repos/alexsunxl/jm-tauri/releases/latest")
@@ -1364,9 +1428,10 @@ async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckInfo, Stri
         if is_release {
             has_update = current_tag.as_deref().map(|t| t != latest).unwrap_or(true);
             compare_mode = Some("tag".to_string());
-        } else if let (Some(cur), Some(lat)) =
-            (parse_base_version(&current_version), parse_version_from_tag(latest))
-        {
+        } else if let (Some(cur), Some(lat)) = (
+            parse_base_version(&current_version),
+            parse_version_from_tag(latest),
+        ) {
             has_update = lat > cur;
             compare_mode = Some("version".to_string());
         } else {
@@ -1406,7 +1471,11 @@ async fn app_update_download(
     let raw_name = name
         .and_then(|n| {
             let t = n.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         })
         .or_else(|| trimmed.rsplit('/').next().map(|s| s.to_string()))
         .unwrap_or_else(|| "update.bin".to_string());
@@ -1454,7 +1523,8 @@ async fn app_update_download(
         .await
         .map_err(|e| format!("read update chunk failed: {e}"))?
     {
-        file.write_all(&chunk).map_err(|e| format!("write update failed: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("write update failed: {e}"))?;
         downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
 
         let percent = total_bytes.and_then(|total| {
@@ -1465,7 +1535,8 @@ async fn app_update_download(
             }
         });
 
-        let should_emit = percent != last_percent || last_emit_at.elapsed() >= Duration::from_millis(150);
+        let should_emit =
+            percent != last_percent || last_emit_at.elapsed() >= Duration::from_millis(150);
         if should_emit {
             let _ = app.emit(
                 UPDATE_DOWNLOAD_PROGRESS_EVENT,
@@ -1595,7 +1666,11 @@ async fn api_proxy_check(proxy: Option<String>) -> Result<String, String> {
     let proxy = proxy
         .and_then(|s| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         })
         .or_else(current_socks_proxy);
 
@@ -1609,8 +1684,9 @@ async fn api_proxy_check(proxy: Option<String>) -> Result<String, String> {
         .build()
         .map_err(|e| format!("create http client failed: {e}"))?;
 
+    let probe_url = current_api_base().unwrap_or_else(|| JM_API_BASE_DEFAULT.to_string());
     let resp = client
-        .get(JM_API_BASE_DEFAULT)
+        .get(&probe_url)
         .send()
         .await
         .map_err(|e| format!("proxy request failed: {e}"))?;
@@ -2109,15 +2185,11 @@ fn parse_series_latest(series: &[serde_json::Value]) -> Option<(String, Option<S
     if items.len() <= 1 {
         return None;
     }
-    items.sort_by(|a, b| {
-        match (a.1, b.1) {
-            (Some(sa), Some(sb)) => sa
-                .partial_cmp(&sb)
-                .unwrap_or(std::cmp::Ordering::Equal),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => a.0.cmp(&b.0),
-        }
+    items.sort_by(|a, b| match (a.1, b.1) {
+        (Some(sa), Some(sb)) => sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => a.0.cmp(&b.0),
     });
     let last = items.pop()?;
     Some((last.2, last.3))
@@ -2197,9 +2269,12 @@ async fn scan_latest_chapters_with_mode(
         } else {
             fav.title.clone()
         };
-        let prev_pair = prev_latest
-            .as_ref()
-            .map(|entry| (entry.latest_chapter_id.clone(), entry.latest_chapter_sort.clone()));
+        let prev_pair = prev_latest.as_ref().map(|entry| {
+            (
+                entry.latest_chapter_id.clone(),
+                entry.latest_chapter_sort.clone(),
+            )
+        });
 
         if let Some(scan_id) = &scan_id {
             emit_latest_scan_progress(
@@ -2219,7 +2294,7 @@ async fn scan_latest_chapters_with_mode(
             );
         }
 
-        let album = match api_album(aid.clone(), HashMap::new()).await {
+        let album = match api_album(aid.clone(), stored_session_cookies()).await {
             Ok(v) => v,
             Err(e) => {
                 logl!("[tauri][latest] album fetch failed aid={} err={}", aid, e);
@@ -2360,7 +2435,11 @@ async fn api_local_favorites_scan_latest(
 ) -> Result<LatestScanSummary, String> {
     let scan_id = scan_id.and_then(|s| {
         let t = s.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
     let cancel_token = scan_id.as_ref().map(|id| {
         let key = local_favorites_scan_cancel_key(id);
@@ -2369,7 +2448,8 @@ async fn api_local_favorites_scan_latest(
         token
     });
 
-    let summary = scan_latest_chapters_with_mode(app.clone(), true, kind, scan_id, cancel_token).await?;
+    let summary =
+        scan_latest_chapters_with_mode(app.clone(), true, kind, scan_id, cancel_token).await?;
     if !summary.cancelled {
         if let Err(e) = scan_follow_updates(app).await {
             logl!("[tauri][follow] scan after manual latest refresh failed: {e}");
@@ -2517,10 +2597,7 @@ async fn fetch_api_domain_list() -> Result<Vec<String>, String> {
                 list = parse_api_domain_payload(&decoded);
                 if list.is_empty() {
                     let preview = decoded.chars().take(200).collect::<String>();
-                    logl!(
-                        "[tauri][api] domain decode payload empty: {}",
-                        preview
-                    );
+                    logl!("[tauri][api] domain decode payload empty: {}", preview);
                 }
             }
             Err(e) => {
@@ -2545,10 +2622,7 @@ async fn fetch_api_domain_list() -> Result<Vec<String>, String> {
             return Ok(list);
         }
         last_err = Some(format!("empty domain list from {}", url));
-        logl!(
-            "[tauri][api] domain fetch empty url={}",
-            url
-        );
+        logl!("[tauri][api] domain fetch empty url={}", url);
     }
     Err(last_err.unwrap_or_else(|| "api domain list unavailable".to_string()))
 }
@@ -2560,13 +2634,84 @@ async fn api_api_domain_fetch() -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+fn is_auth_expired_api_error(api_code: i64, msg: &str) -> bool {
+    if matches!(api_code, 401 | 403) {
+        return true;
+    }
+
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("login")
+        && (lower.contains("required")
+            || lower.contains("invalid")
+            || lower.contains("expired")
+            || lower.contains("please"))
+    {
+        return true;
+    }
+    if lower.contains("token") && (lower.contains("invalid") || lower.contains("expired")) {
+        return true;
+    }
+
+    let compact = msg
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    let has_login_word =
+        compact.contains("登录") || compact.contains("登入") || compact.contains("登錄");
+    has_login_word
+        && (compact.contains("请先")
+            || compact.contains("請先")
+            || compact.contains("未")
+            || compact.contains("无效")
+            || compact.contains("無效")
+            || compact.contains("失效")
+            || compact.contains("过期")
+            || compact.contains("過期"))
+}
+
 fn api_error(status: reqwest::StatusCode, api_code: i64, msg: impl AsRef<str>) -> String {
+    let msg = msg.as_ref();
+    let effective_status =
+        if matches!(status.as_u16(), 401 | 403) || is_auth_expired_api_error(api_code, msg) {
+            401
+        } else {
+            status.as_u16()
+        };
     format!(
         "HTTP_STATUS={};API_CODE={};{}",
-        status.as_u16(),
-        api_code,
-        msg.as_ref()
+        effective_status, api_code, msg
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_chinese_auth_expired_messages() {
+        assert!(is_auth_expired_api_error(200, "请先登录"));
+        assert!(is_auth_expired_api_error(200, "登录态无效"));
+        assert!(is_auth_expired_api_error(200, "登入已失效"));
+    }
+
+    #[test]
+    fn detects_english_auth_expired_messages() {
+        assert!(is_auth_expired_api_error(200, "login required"));
+        assert!(is_auth_expired_api_error(200, "token expired"));
+        assert!(is_auth_expired_api_error(401, "whatever"));
+    }
+
+    #[test]
+    fn api_error_normalizes_auth_expired_to_401() {
+        let err = api_error(reqwest::StatusCode::OK, 200, "请先登录");
+        assert!(err.starts_with("HTTP_STATUS=401;API_CODE=200;"));
+    }
+
+    #[test]
+    fn api_error_keeps_non_auth_business_errors_at_original_status() {
+        let err = api_error(reqwest::StatusCode::OK, 5001, "comic not found");
+        assert!(err.starts_with("HTTP_STATUS=200;API_CODE=5001;"));
+    }
 }
 
 async fn api_get_encrypted(
@@ -2662,7 +2807,11 @@ async fn api_get_encrypted(
             };
             logl!(
                 "[tauri][api] error path={} http_status={} api_code={} base={:?} msg={:?}",
-                path, status, env.code, base, msg
+                path,
+                status,
+                env.code,
+                base,
+                msg
             );
             return Err(api_error(status, env.code, msg));
         }
@@ -2783,7 +2932,11 @@ async fn api_get_encrypted_with_query(
             };
             logl!(
                 "[tauri][api] error path={} http_status={} api_code={} base={:?} msg={:?}",
-                path, status, env.code, base, msg
+                path,
+                status,
+                env.code,
+                base,
+                msg
             );
             return Err(api_error(status, env.code, msg));
         }
@@ -2895,7 +3048,11 @@ async fn api_post_encrypted(
             };
             logl!(
                 "[tauri][api] error path={} http_status={} api_code={} base={:?} msg={:?}",
-                path, status, env.code, base, msg
+                path,
+                status,
+                env.code,
+                base,
+                msg
             );
             return Err(api_error(status, env.code, msg));
         }
@@ -3051,12 +3208,18 @@ async fn api_promote(
 }
 
 #[tauri::command]
-async fn api_history(page: String, cookies: HashMap<String, String>) -> Result<serde_json::Value, String> {
+async fn api_history(
+    page: String,
+    cookies: HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
     api_get_encrypted("/watch_list", page, cookies).await
 }
 
 #[tauri::command]
-async fn api_daily(user_id: String, cookies: HashMap<String, String>) -> Result<serde_json::Value, String> {
+async fn api_daily(
+    user_id: String,
+    cookies: HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
     let query = format!("user_id={}", user_id);
     api_get_encrypted_with_query("/daily", Some(query), cookies).await
 }
@@ -3069,7 +3232,10 @@ async fn api_daily_check(
 ) -> Result<serde_json::Value, String> {
     api_post_encrypted(
         "/daily_chk",
-        &[("user_id", user_id.as_str()), ("daily_id", daily_id.as_str())],
+        &[
+            ("user_id", user_id.as_str()),
+            ("daily_id", daily_id.as_str()),
+        ],
         cookies,
     )
     .await
@@ -3120,7 +3286,10 @@ fn api_read_cache_stats() -> Result<ReadCacheStats, String> {
     let summary_tree = db
         .open_tree("read_cache_summary")
         .map_err(|e| format!("open cache summary tree failed: {e}"))?;
-    if let Some(val) = summary_tree.get("summary").map_err(|e| format!("read summary failed: {e}"))? {
+    if let Some(val) = summary_tree
+        .get("summary")
+        .map_err(|e| format!("read summary failed: {e}"))?
+    {
         let stats: ReadCacheStats =
             serde_json::from_slice(&val).map_err(|e| format!("decode summary failed: {e}"))?;
         return Ok(stats);
@@ -3273,7 +3442,10 @@ async fn api_register_captcha(web_base: Option<String>) -> Result<String, String
         .map_err(|e| format!("captcha request failed: {e}"))?;
 
     let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|e| format!("read captcha failed: {e}"))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read captcha failed: {e}"))?;
     if !status.is_success() {
         return Err(format!("captcha http status {}", status.as_u16()));
     }
@@ -3321,7 +3493,10 @@ async fn api_register(
         .map_err(|e| format!("register request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read register response failed: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read register response failed: {e}"))?;
     let (ok, msg) = parse_toastr_message(&text);
 
     if ok {
@@ -3340,7 +3515,10 @@ async fn api_register(
 }
 
 #[tauri::command]
-async fn api_register_verify(email: String, web_base: Option<String>) -> Result<serde_json::Value, String> {
+async fn api_register_verify(
+    email: String,
+    web_base: Option<String>,
+) -> Result<serde_json::Value, String> {
     let base = web_base_from_opt(web_base);
     let url = format!("{}/confirm", base.trim_end_matches('/'));
 
@@ -3357,7 +3535,10 @@ async fn api_register_verify(email: String, web_base: Option<String>) -> Result<
         .map_err(|e| format!("verify mail request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read verify mail response failed: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read verify mail response failed: {e}"))?;
     let (ok, msg) = parse_toastr_message(&text);
 
     if ok {
@@ -3373,7 +3554,10 @@ async fn api_register_verify(email: String, web_base: Option<String>) -> Result<
 }
 
 #[tauri::command]
-async fn api_reset_password(email: String, web_base: Option<String>) -> Result<serde_json::Value, String> {
+async fn api_reset_password(
+    email: String,
+    web_base: Option<String>,
+) -> Result<serde_json::Value, String> {
     let base = web_base_from_opt(web_base);
     let url = format!("{}/lost", base.trim_end_matches('/'));
 
@@ -3390,7 +3574,10 @@ async fn api_reset_password(email: String, web_base: Option<String>) -> Result<s
         .map_err(|e| format!("reset password request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read reset response failed: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read reset response failed: {e}"))?;
     let (ok, msg) = parse_toastr_message(&text);
 
     if ok {
@@ -3406,7 +3593,10 @@ async fn api_reset_password(email: String, web_base: Option<String>) -> Result<s
 }
 
 #[tauri::command]
-async fn api_verify_mail(url: String, web_base: Option<String>) -> Result<serde_json::Value, String> {
+async fn api_verify_mail(
+    url: String,
+    web_base: Option<String>,
+) -> Result<serde_json::Value, String> {
     let url = normalize_verify_url(&url, web_base);
     if url.is_empty() {
         return Err("empty verify url".to_string());
@@ -3424,7 +3614,10 @@ async fn api_verify_mail(url: String, web_base: Option<String>) -> Result<serde_
         .map_err(|e| format!("verify url request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read verify url response failed: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read verify url response failed: {e}"))?;
     let (ok, msg) = parse_toastr_message(&text);
 
     if ok {
@@ -3524,7 +3717,8 @@ async fn api_cover_cache(url: String, app: tauri::AppHandle) -> Result<String, S
                         .bytes()
                         .await
                         .map_err(|e| format!("read body failed: {e}"))?;
-                    std::fs::write(&out_path, &bytes).map_err(|e| format!("write cache failed: {e}"))?;
+                    std::fs::write(&out_path, &bytes)
+                        .map_err(|e| format!("write cache failed: {e}"))?;
                     return Ok(out_path.to_string_lossy().to_string());
                 }
             }
@@ -3639,7 +3833,10 @@ async fn api_search(
             };
             logl!(
                 "[tauri][search] error http_status={} api_code={} base={:?} msg={:?}",
-                status, env.code, base, msg
+                status,
+                env.code,
+                base,
+                msg
             );
             return Err(api_error(status, env.code, msg));
         }
@@ -3677,11 +3874,7 @@ async fn api_album(
     let mut last_err = None;
 
     for (pos, (idx, base)) in candidates.iter().enumerate() {
-        let url = format!(
-            "{}/album/?comicName=&id={}",
-            base.trim_end_matches('/'),
-            id
-        );
+        let url = format!("{}/album/?comicName=&id={}", base.trim_end_matches('/'), id);
 
         let resp = match client
             .get(&url)
@@ -3748,7 +3941,14 @@ async fn api_album(
             } else {
                 format!("request failed, code={}, http_status={}", env.code, status)
             };
-            return Err(msg);
+            logl!(
+                "[tauri][album] error http_status={} api_code={} base={:?} msg={:?}",
+                status,
+                env.code,
+                base,
+                msg
+            );
+            return Err(api_error(status, env.code, msg));
         }
 
         let encrypted = env
@@ -3757,8 +3957,8 @@ async fn api_album(
             .ok_or_else(|| format!("unexpected data type: {}", env.data))?;
         let decrypted = decode_resp_data(encrypted, ts)?;
         JM_API_BASE_INDEX.store(*idx, Ordering::Relaxed);
-        let album: serde_json::Value =
-            serde_json::from_str(&decrypted).map_err(|e| format!("parse decrypted json failed: {e}"))?;
+        let album: serde_json::Value = serde_json::from_str(&decrypted)
+            .map_err(|e| format!("parse decrypted json failed: {e}"))?;
         if let Some(series) = album.get("series").and_then(|v| v.as_array()) {
             if let Ok(tree) = read_latest_tree() {
                 let now = std::time::SystemTime::now()
@@ -3879,7 +4079,14 @@ async fn api_chapter(
             } else {
                 format!("request failed, code={}, http_status={}", env.code, status)
             };
-            return Err(msg);
+            logl!(
+                "[tauri][chapter] error http_status={} api_code={} base={:?} msg={:?}",
+                status,
+                env.code,
+                base,
+                msg
+            );
+            return Err(api_error(status, env.code, msg));
         }
 
         let encrypted = env
@@ -3920,8 +4127,7 @@ async fn api_comic_page_count(
         updated_at: now,
     };
     let tree = read_comic_extra_tree()?;
-    let val =
-        serde_json::to_vec(&entry).map_err(|e| format!("encode comic extra failed: {e}"))?;
+    let val = serde_json::to_vec(&entry).map_err(|e| format!("encode comic extra failed: {e}"))?;
     tree.insert(entry.id.as_bytes(), val)
         .map_err(|e| format!("write comic extra failed: {e}"))?;
     let _ = tree.flush();
@@ -4015,7 +4221,11 @@ async fn api_chapter_scramble_id(id: String) -> Result<i64, String> {
         if !status.is_success() && should_retry_status(status) && pos + 1 < candidates.len() {
             let msg = format!("http status {status}");
             last_err = Some(msg.clone());
-            logl!("[tauri][chapter_scramble] retry base={} status={}", base, status);
+            logl!(
+                "[tauri][chapter_scramble] retry base={} status={}",
+                base,
+                status
+            );
             continue;
         }
 
@@ -4206,7 +4416,9 @@ fn sanitize_path_component(s: &str) -> String {
     }
 }
 
-fn resolve_read_cache_dir<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+fn resolve_read_cache_dir<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     // Always store cache alongside the executable (cross-platform, easy for user to locate).
     // Env override for debugging/testing.
     if let Ok(dir) = std::env::var("JM_CACHE_DIR") {
@@ -4250,7 +4462,13 @@ fn resolve_data_dir() -> Result<std::path::PathBuf, String> {
 }
 
 fn mime_from_path(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -4295,7 +4513,10 @@ fn jmcache_protocol<R: tauri::Runtime>(
         }
     };
 
-    let (requested_canon, base_canon) = match (std::fs::canonicalize(&requested), std::fs::canonicalize(&base)) {
+    let (requested_canon, base_canon) = match (
+        std::fs::canonicalize(&requested),
+        std::fs::canonicalize(&base),
+    ) {
         (Ok(r), Ok(b)) => (r, b),
         _ => {
             return Response::builder()
@@ -4403,7 +4624,10 @@ async fn api_local_favorite_has(
     store: tauri::State<'_, LocalFavoritesStore>,
 ) -> Result<bool, String> {
     let tree = store.tree()?;
-    Ok(tree.get(aid.as_bytes()).map_err(|e| format!("sled get failed: {e}"))?.is_some())
+    Ok(tree
+        .get(aid.as_bytes())
+        .map_err(|e| format!("sled get failed: {e}"))?
+        .is_some())
 }
 
 #[tauri::command]
@@ -4458,7 +4682,8 @@ async fn api_local_favorite_toggle(
         added_at: now,
         updated_at: now,
     };
-    let val = bincode::serialize(&item).map_err(|e| format!("encode local favorite failed: {e}"))?;
+    let val =
+        bincode::serialize(&item).map_err(|e| format!("encode local favorite failed: {e}"))?;
     tree.insert(aid.as_bytes(), val)
         .map_err(|e| format!("sled insert failed: {e}"))?;
     let _ = tree.flush();
@@ -4541,7 +4766,9 @@ async fn api_image_descramble_file(
     let num = if num <= 1 { 1 } else { num };
     logd!(
         "[tauri][imgfile] start url={:?} num={} read_key={:?}",
-        url, num, read_key
+        url,
+        num,
+        read_key
     );
 
     let token = read_key.as_deref().map(|k| registry.token_for(k));
@@ -4693,70 +4920,105 @@ async fn api_favorites(
     let token = md5_hex(&format!("{ts}{token_secret}"));
     let tokenparam = format!("{ts},{JM_HEADER_VER}");
 
-    let api_base = std::env::var("JM_API_BASE").unwrap_or_else(|_| JM_API_BASE_DEFAULT.to_string());
-    let url = format!(
-        "{}/favorite/?page={}&folder_id={}&o={}",
-        api_base.trim_end_matches('/'),
-        page,
-        folder_id,
-        sort
-    );
-
     let client = http_client()?;
-    let resp = client
-        .get(&url)
-        .header("tokenparam", tokenparam)
-        .header("token", token)
-        .header(
-            "user-agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
-        )
-        .header("accept-encoding", "identity")
-        .header("version", JM_APP_VERSION)
-        .header(reqwest::header::COOKIE, cookie_header(&cookies))
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
+    let candidates = api_base_candidates();
+    let mut last_err = None;
 
-    let status = resp.status();
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("failed reading response body: {e}"))?;
-
-    let body_preview = String::from_utf8_lossy(&body_bytes)
-        .chars()
-        .take(300)
-        .collect::<String>();
-
-    let env: ApiEnvelope = serde_json::from_slice(&body_bytes).map_err(|e| {
-        format!(
-            "invalid json response: status={status}, err={e}, body_preview={:?}",
-            body_preview
-        )
-    })?;
-
-    if env.code != 200 {
-        let msg = if !env.error_msg.is_empty() {
-            env.error_msg
-        } else if !env.message.is_empty() {
-            env.message
-        } else {
-            format!("request failed, code={}, http_status={}", env.code, status)
-        };
-        logl!(
-            "[tauri][fav] error http_status={} api_code={} url={:?} msg={:?}",
-            status, env.code, url, msg
+    for (pos, (idx, base)) in candidates.iter().enumerate() {
+        let url = format!(
+            "{}/favorite/?page={}&folder_id={}&o={}",
+            base.trim_end_matches('/'),
+            page,
+            folder_id,
+            sort
         );
-        return Err(api_error(status, env.code, msg));
+
+        let resp = match client
+            .get(&url)
+            .header("tokenparam", tokenparam.clone())
+            .header("token", token.clone())
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43",
+            )
+            .header("accept-encoding", "identity")
+            .header("version", JM_APP_VERSION)
+            .header(reqwest::header::COOKIE, cookie_header(&cookies))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("request failed: {e}");
+                last_err = Some(msg.clone());
+                if should_retry_error(&e) && pos + 1 < candidates.len() {
+                    logl!("[tauri][fav] retry base={} err={:?}", base, msg);
+                    continue;
+                }
+                return Err(msg);
+            }
+        };
+
+        let status = resp.status();
+        if !status.is_success() && should_retry_status(status) && pos + 1 < candidates.len() {
+            let msg = format!("http status {status}");
+            last_err = Some(msg.clone());
+            logl!("[tauri][fav] retry base={} status={}", base, status);
+            continue;
+        }
+
+        let body_bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("failed reading response body: {e}"))?;
+
+        let body_preview = String::from_utf8_lossy(&body_bytes)
+            .chars()
+            .take(300)
+            .collect::<String>();
+        if should_retry_body(&body_preview) && pos + 1 < candidates.len() {
+            let msg = "body indicates invalid domain".to_string();
+            last_err = Some(msg.clone());
+            logl!("[tauri][fav] retry base={} body_hint", base);
+            continue;
+        }
+
+        let env: ApiEnvelope = serde_json::from_slice(&body_bytes).map_err(|e| {
+            format!(
+                "invalid json response: status={status}, err={e}, body_preview={:?}",
+                body_preview
+            )
+        })?;
+
+        if env.code != 200 {
+            let msg = if !env.error_msg.is_empty() {
+                env.error_msg
+            } else if !env.message.is_empty() {
+                env.message
+            } else {
+                format!("request failed, code={}, http_status={}", env.code, status)
+            };
+            logl!(
+                "[tauri][fav] error http_status={} api_code={} base={:?} msg={:?}",
+                status,
+                env.code,
+                base,
+                msg
+            );
+            return Err(api_error(status, env.code, msg));
+        }
+
+        let encrypted = env
+            .data
+            .as_str()
+            .ok_or_else(|| format!("unexpected data type: {}", env.data))?;
+        let decrypted = decode_resp_data(encrypted, ts)?;
+        JM_API_BASE_INDEX.store(*idx, Ordering::Relaxed);
+        return serde_json::from_str(&decrypted)
+            .map_err(|e| format!("parse decrypted json failed: {e}"));
     }
 
-    let encrypted = env
-        .data
-        .as_str()
-        .ok_or_else(|| format!("unexpected data type: {}", env.data))?;
-    let decrypted = decode_resp_data(encrypted, ts)?;
-    serde_json::from_str(&decrypted).map_err(|e| format!("parse decrypted json failed: {e}"))
+    Err(last_err.unwrap_or_else(|| "request failed".to_string()))
 }
 
 #[tauri::command]
@@ -4874,6 +5136,7 @@ pub fn run() {
             greet,
             api_config_get,
             api_config_set_socks_proxy,
+            api_session_clear,
             app_update_check,
             app_update_download,
             api_read_progress_upsert,
