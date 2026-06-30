@@ -136,6 +136,56 @@ test("local favorites filter/sort tabs persist in localStorage", async ({ page }
   expect(calledKinds).toContain("multi");
 });
 
+test("local favorites list clamps long content without horizontal overflow", async ({ page }) => {
+  const longTitle =
+    "[超長漢化組] アンソロジー 寝取られ報告されながら驚くアンソロジー " +
+    "非常に長いタイトル".repeat(12);
+  const longAuthor = [
+    "218",
+    "akagaisahito",
+    "akinosora",
+    "asukaren",
+    "crow",
+    "glycogen",
+    "hinamori",
+    "hiroaki",
+    "hizukiakira",
+    "kakinonashiko",
+    "kamushi",
+    "karl",
+    "kosyo",
+    "kumaashis",
+    "kuriharakenshirou",
+    "kuronomiki",
+    "mutsutake",
+    "verylongauthornamewithoutbreakpoints".repeat(8),
+  ].join(", ");
+
+  await installTauriMock(page, {
+    favorites: [
+      {
+        aid: "777001",
+        title: longTitle,
+        author: longAuthor,
+        coverUrl: "",
+        addedAt: 100,
+        updatedAt: 100,
+        latestChapterSort: null,
+      },
+    ],
+  });
+
+  await page.goto("/#/home/local_favorites");
+  await expect(page.getByText(/AID：777001/)).toBeVisible();
+
+  const overflow = await page.evaluate(() => ({
+    html: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    body: document.body.scrollWidth - document.body.clientWidth,
+  }));
+  expect(overflow.html).toBeLessThanOrEqual(1);
+  expect(overflow.body).toBeLessThanOrEqual(1);
+});
+
 test("settings release build auto-checks update and downloads with progress", async ({ page }) => {
   await installTauriMock(page, {
     appVersion: "0.1.25+jm-20260312-000000",

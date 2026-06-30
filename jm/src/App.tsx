@@ -166,7 +166,7 @@ function HomeLayout(props: {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-[220px_1fr]">
+        <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
           <div className="hidden md:block">
             <SideNav
               variant="sidebar"
@@ -179,7 +179,7 @@ function HomeLayout(props: {
             />
           </div>
 
-          <div>
+          <div className="min-w-0">
             <Routes>
               <Route
                 path="home"

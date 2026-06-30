@@ -606,6 +606,7 @@ export default function ComicDetailPage(props: {
       let done = 0;
       let failed = 0;
       let total = 0;
+      const cacheJobs: Array<{ chapterId: string; images: string[]; nums: number[] }> = [];
       for (const chapter of chapters) {
         const chapterId = toId(chapter.id) || rootAid;
         if (!chapterId) continue;
@@ -635,12 +636,15 @@ export default function ComicDetailPage(props: {
           segmentNums: nums,
         });
         total += sorted.length;
-        setCacheProgress({ done, total, failed });
-        for (let i = 0; i < sorted.length; i += 1) {
+        cacheJobs.push({ chapterId, images: sorted, nums });
+      }
+      setCacheProgress({ done, total, failed });
+      for (const job of cacheJobs) {
+        for (let i = 0; i < job.images.length; i += 1) {
           try {
             await invoke<string>("api_image_descramble_file", {
-              url: normalizeImgUrl(sorted[i], chapterId),
-              num: nums[i] ?? 0,
+              url: normalizeImgUrl(job.images[i], job.chapterId),
+              num: job.nums[i] ?? 0,
               aid: cacheAid,
               readKey: undefined,
             });
@@ -752,7 +756,9 @@ export default function ComicDetailPage(props: {
               <span className="inline-flex items-center gap-1">
                 {!cacheDownloading ? <Download className="h-4 w-4" /> : null}
                 {cacheDownloading && cacheProgress
-                  ? `缓存 ${cacheProgress.done}/${cacheProgress.total || "?"}`
+                  ? cacheProgress.total > 0
+                    ? `缓存 ${cacheProgress.done}/${cacheProgress.total}`
+                    : "准备缓存"
                   : "一键缓存"}
               </span>
             </Button>
@@ -775,7 +781,9 @@ export default function ComicDetailPage(props: {
 
         {cacheDownloading && cacheProgress ? (
           <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-            正在缓存：{cacheProgress.done}/{cacheProgress.total || "?"}
+            {cacheProgress.total > 0
+              ? `正在缓存：${cacheProgress.done}/${cacheProgress.total}`
+              : "正在准备缓存..."}
             {cacheProgress.failed ? ` · 失败 ${cacheProgress.failed}` : ""}
           </div>
         ) : null}

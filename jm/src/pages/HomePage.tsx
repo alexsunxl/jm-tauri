@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import useSWR from "swr";
 
 import type { Session } from "../auth/session";
 import { isAuthExpiredError } from "../auth/errors";
@@ -94,9 +95,8 @@ export default function HomePage(props: {
   onAuthExpired: () => void;
   onOpenComic: (aid: string) => void;
 }) {
-  const [latest, setLatest] = useState<RawRecord[] | null>(null);
   const [promote, setPromote] = useState<unknown[] | null>(null);
-  const [loadError, setLoadError] = useState<string>("");
+  const [promoteError, setPromoteError] = useState<string>("");
   const viewKey = "jm_view_home_latest";
   const [viewMode, setViewMode] = useState<"list" | "card">(() => {
     try {
@@ -115,19 +115,36 @@ export default function HomePage(props: {
     }
   }, [viewMode, viewKey]);
 
+  const { data: latestRaw, error: latestError } = useSWR(
+    ["home-latest", props.session.cookies],
+    async ([, cookies]) => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<unknown>("api_latest", { page: "0", cookies });
+    },
+    {
+      keepPreviousData: true,
+      revalidateOnFocus: false,
+      onError: (err) => {
+        if (isAuthExpiredError(err)) {
+          props.onAuthExpired();
+        }
+      },
+    },
+  );
+
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      setLoadError("");
+      setPromoteError("");
+      setPromote(null);
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const [latestRaw, promoteRaw] = await Promise.all([
-          invoke<unknown>("api_latest", { page: "0", cookies: props.session.cookies }),
-          invoke<unknown>("api_promote", { page: "0", cookies: props.session.cookies }),
-        ]);
+        const promoteRaw = await invoke<unknown>("api_promote", {
+          page: "0",
+          cookies: props.session.cookies,
+        });
 
         if (cancelled) return;
-        setLatest(extractList(latestRaw).filter(isRecord));
         if (Array.isArray(promoteRaw)) {
           setPromote(promoteRaw);
         } else if (promoteRaw && typeof promoteRaw === "object") {
@@ -143,9 +160,8 @@ export default function HomePage(props: {
           return;
         }
         const msg = e instanceof Error ? e.message : String(e);
-        setLoadError(msg);
-        setLatest(null);
-        setPromote(null);
+        setPromoteError(msg);
+        setPromote([]);
       }
     };
 
@@ -155,25 +171,33 @@ export default function HomePage(props: {
     };
   }, [props.onAuthExpired, props.session.cookies]);
 
+  const latest = useMemo(
+    () => (latestRaw === undefined ? null : extractList(latestRaw).filter(isRecord)),
+    [latestRaw],
+  );
   const latestCards = useMemo(
     () => (latest ?? []).map((item, idx) => normalizeLatestItem(item, idx)),
     [latest],
   );
+  const latestErrorText =
+    latestError && !isAuthExpiredError(latestError)
+      ? latestError instanceof Error
+        ? latestError.message
+        : String(latestError)
+      : "";
 
   return (
     <div className="flex min-h-[calc(100vh-8rem)] flex-col justify-center gap-3 md:min-h-0 md:justify-start">
-      {loadError ? (
-        <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-red-600 shadow-sm">
-          首页数据加载失败：{loadError}
-        </div>
-      ) : null}
-
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2 text-sm font-medium text-zinc-900">
           <div>最近更新</div>
           <ListViewToggle value={viewMode} onChange={setViewMode} />
         </div>
-        {latest === null ? (
+        {latestErrorText && latest === null ? (
+          <div className="rounded-md border border-zinc-200 bg-white p-2 text-sm text-red-600">
+            最近更新加载失败：{latestErrorText}
+          </div>
+        ) : latest === null ? (
           <Loading />
         ) : latestCards.length === 0 ? (
           <div className="rounded-md border border-dashed border-zinc-200 p-3 text-center text-sm text-zinc-500">
@@ -255,7 +279,11 @@ export default function HomePage(props: {
 
       <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 text-sm font-medium text-zinc-900">推荐/推广</div>
-        {promote === null ? (
+        {promoteError ? (
+          <div className="rounded-md border border-zinc-200 bg-white p-2 text-sm text-red-600">
+            推荐/推广加载失败：{promoteError}
+          </div>
+        ) : promote === null ? (
           <Loading />
         ) : (
           <div className="text-sm text-zinc-700">共 {promote.length} 个 block（展示原始数据，后续再渲染内容）</div>

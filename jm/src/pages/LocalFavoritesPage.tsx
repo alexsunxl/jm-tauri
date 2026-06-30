@@ -432,13 +432,13 @@ export default function LocalFavoritesPage(props: {
   }, [filter, items, sortMode]);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
       <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
         收藏(本地) · 当前：{stats.filtered}
         <span className="text-zinc-400">（总数：{stats.total}）</span>
       </div>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 text-sm font-medium text-zinc-900">列表</div>
 
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 pb-3">
@@ -609,7 +609,7 @@ export default function LocalFavoritesPage(props: {
             })}
           </div>
         ) : (
-          <div className="mt-3 flex flex-col gap-2">
+          <div className="mt-3 flex min-w-0 flex-col gap-2">
             {visible.map((it) => {
               const cover =
                 it.coverUrl?.trim() || `${getImgBase()}/media/albums/${it.aid}_3x4.jpg`;
@@ -619,7 +619,7 @@ export default function LocalFavoritesPage(props: {
               return (
                 <div
                   key={it.aid}
-                  className="relative flex flex-col gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
+                  className="relative flex min-w-0 flex-col gap-2 overflow-hidden rounded-md border border-zinc-200 bg-white px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
                 >
                   <div className="flex w-full min-w-0 items-center gap-3 sm:flex-1">
                     <div className="h-16 w-12 flex-none overflow-hidden rounded bg-zinc-100">
@@ -656,7 +656,7 @@ export default function LocalFavoritesPage(props: {
                       </div>
                     </div>
                   </div>
-                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-none sm:justify-end">
                     <button
                       type="button"
                       className="h-8 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"

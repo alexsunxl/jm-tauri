@@ -209,12 +209,12 @@ export default function FavoritesPage(props: {
   }, [favoriteData, favoritePage]);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
       <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
         收藏(在线) · {header}
       </div>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 text-sm font-medium text-zinc-900">列表</div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -380,7 +380,7 @@ export default function FavoritesPage(props: {
             })}
           </div>
         ) : (
-          <div className="mt-3 flex flex-col gap-2">
+          <div className="mt-3 flex min-w-0 flex-col gap-2">
             {favoriteList.map((item, idx) => {
               const aid =
                 typeof item?.id === "string" || typeof item?.id === "number"
@@ -407,7 +407,7 @@ export default function FavoritesPage(props: {
               return (
                 <div
                   key={`${aid}-${idx}`}
-                  className="flex items-center gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2"
+                  className="flex min-w-0 items-center gap-3 overflow-hidden rounded-md border border-zinc-200 bg-white px-3 py-2"
                 >
                   <div className="h-16 w-12 flex-none overflow-hidden rounded bg-zinc-100">
                     <CoverImage src={cover} alt={title} className="h-full w-full object-cover" />
