@@ -65,6 +65,28 @@ test("desktop reader shortcuts show menu and navigate back", async ({ page }) =>
   expect(cancelCalls).toBeGreaterThan(0);
 });
 
+test("desktop reader arrow keys navigate chapters", async ({ page }) => {
+  await installTauriMock(page, {
+    albumSeries: [
+      { id: "11", sort: 1, name: "One", images: ["00001.jpg"] },
+      { id: "22", sort: 2, name: "Two", images: ["00001.jpg"] },
+      { id: "33", sort: 3, name: "Three", images: ["00001.jpg"] },
+    ],
+  });
+
+  await page.goto("/#/detail/123");
+  await page.getByRole("button", { name: "第2话：Two", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByText("正在切换到下一话 第3话：Three", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/33/);
+
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByText("正在切换到上一话 第2话：Two", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+});
+
 test("local favorites filter/sort tabs persist in localStorage", async ({ page }) => {
   await installTauriMock(page, {
     favorites: [

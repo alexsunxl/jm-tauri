@@ -1212,14 +1212,18 @@ export default function ReadingPage(props: {
     setCurrentPage((prev) => (prev === page ? prev : page));
   }, []);
 
-  const nextChapter = useMemo(() => {
+  const chapterNav = useMemo(() => {
     const list = [...(Array.isArray(props.chapters) ? props.chapters : [])].sort(
       (a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0),
     );
     const curIdx = list.findIndex((c) => toId(c.id) === props.chapterId);
-    if (curIdx >= 0 && curIdx < list.length - 1) return list[curIdx + 1];
-    return null;
+    return {
+      previousChapter: curIdx > 0 ? list[curIdx - 1] : null,
+      nextChapter: curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null,
+    };
   }, [props.chapterId, props.chapters]);
+  const previousChapter = chapterNav.previousChapter;
+  const nextChapter = chapterNav.nextChapter;
 
   const rootAid = useMemo(() => {
     const list = Array.isArray(props.chapters) ? [...props.chapters] : [];
@@ -1524,6 +1528,29 @@ export default function ReadingPage(props: {
         return;
       }
       if (
+        (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+        !e.repeat &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        window.matchMedia("(min-width: 768px)").matches
+      ) {
+        const target = e.key === "ArrowLeft" ? previousChapter : nextChapter;
+        e.preventDefault();
+        if (!target) return;
+        const chapterId = toId(target.id);
+        if (!chapterId) return;
+        const title = formatChapterTitle(target);
+        showToast({
+          ok: true,
+          text: `正在切换到${e.key === "ArrowLeft" ? "上一话" : "下一话"} ${title}`,
+          durationMs: 1200,
+        });
+        props.onOpenChapter(chapterId, title);
+        return;
+      }
+      if (
         e.key === "Backspace" &&
         !e.repeat &&
         !e.altKey &&
@@ -1537,7 +1564,7 @@ export default function ReadingPage(props: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleBack, showMenu]);
+  }, [handleBack, nextChapter, previousChapter, props.onOpenChapter, showMenu, showToast]);
 
   return (
     <ReadingPullContainer

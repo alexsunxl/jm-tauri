@@ -18,11 +18,20 @@ type MockSearchItem = {
 
 type MockLatestItem = Record<string, unknown>;
 
+type MockAlbumChapter = {
+  id: string;
+  sort?: string | number;
+  name?: string;
+  images?: string[];
+};
+
 type MockOptions = {
   favorites?: MockFavorite[];
   searchItems?: MockSearchItem[];
   latestItems?: MockLatestItem[];
   promoteBlocks?: unknown[];
+  albumSeries?: MockAlbumChapter[];
+  chapterImages?: Record<string, string[]>;
   followAids?: string[];
   readProgress?: Record<string, { updatedAt: number; chapterId?: string; pageIndex?: number }>;
   appVersion?: string;
@@ -51,6 +60,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const searchItems = Array.isArray(payload.searchItems) ? payload.searchItems : [];
     const latestItems = Array.isArray(payload.latestItems) ? payload.latestItems : [];
     const promoteBlocks = Array.isArray(payload.promoteBlocks) ? payload.promoteBlocks : [];
+    const albumSeries = Array.isArray(payload.albumSeries) ? payload.albumSeries : [];
+    const chapterImages = payload.chapterImages ?? {};
     const followAids = Array.isArray(payload.followAids) ? payload.followAids : [];
     const readProgress = payload.readProgress ?? {};
     const appVersion =
@@ -300,21 +311,35 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         }
         case "api_album": {
           const aid = String(args?.id ?? "0");
+          const series = albumSeries.length
+            ? albumSeries.map((chapter) => ({
+                id: chapter.id,
+                sort: chapter.sort,
+                name: chapter.name,
+              }))
+            : [{ id: aid, sort: 1, name: "第1话" }];
           return {
             id: aid,
+            series_id: aid,
             name: `AID ${aid}`,
             author: "mock",
-            series: [{ id: aid, sort: 1, name: "第1话" }],
+            series,
           };
         }
         case "api_chapter": {
           const id = String(args?.id ?? "1");
+          const configured = albumSeries.find((chapter) => chapter.id === id);
+          const images = Array.isArray(chapterImages[id])
+            ? chapterImages[id]
+            : Array.isArray(configured?.images)
+              ? configured.images
+              : ["00001.jpg"];
           return {
             id,
             series_id: id,
-            name: "mock chapter",
+            name: configured?.name ?? "mock chapter",
             series: [{ id, sort: 1, name: "mock chapter" }],
-            images: ["00001.jpg"],
+            images,
           };
         }
         case "api_chapter_scramble_id": {
