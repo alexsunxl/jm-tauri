@@ -114,6 +114,90 @@ test("desktop reader arrow keys navigate chapters", async ({ page }) => {
   await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
 });
 
+test("continuous reader preloads and keeps adjacent chapters scrollable both ways", async ({ page }) => {
+  await installTauriMock(page, {
+    continuousReading: true,
+    albumSeries: [
+      { id: "11", sort: 1, name: "One", images: ["00001.jpg"] },
+      { id: "22", sort: 2, name: "Two", images: ["00001.jpg"] },
+      { id: "33", sort: 3, name: "Three", images: ["00001.jpg"] },
+    ],
+  });
+
+  await page.goto("/#/detail/123");
+  await page.getByRole("button", { name: "第1话：One", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/11/);
+
+  const chapter11 = page.locator('[data-reading-chapter="11"]');
+  const chapter22 = page.locator('[data-reading-chapter="22"]');
+  const chapter33 = page.locator('[data-reading-chapter="33"]');
+  await expect(chapter11).toHaveCount(1);
+  await expect(chapter22).toHaveCount(1);
+  await expect(chapter11.getByAltText("p1")).toBeVisible();
+  await expect(chapter22.getByAltText("p1")).toHaveCount(1);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        const loadedChapters = new Set(
+          calls
+            .filter((call) => call.cmd === "api_image_descramble_file")
+            .map((call) => String(call.args?.url).match(/\/photos\/(\d+)\//)?.[1])
+            .filter(Boolean),
+        );
+        return loadedChapters.size;
+      }),
+    )
+    .toBeGreaterThanOrEqual(2);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const progress = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return progress["123"]?.chapterId;
+      }),
+    )
+    .toBe("11");
+
+  await chapter22.evaluate((node) => node.scrollIntoView({ block: "start" }));
+  await expect(chapter22).toHaveAttribute("data-reading-active", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const progress = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return progress["123"]?.chapterId;
+      }),
+    )
+    .toBe("22");
+  await expect(chapter33).toHaveCount(1);
+  await expect(chapter11).toHaveCount(1);
+
+  await chapter33.evaluate((node) => node.scrollIntoView({ block: "start" }));
+  await expect(chapter33).toHaveAttribute("data-reading-active", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const progress = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return progress["123"]?.chapterId;
+      }),
+    )
+    .toBe("33");
+  await expect(chapter11).toHaveCount(0);
+  await expect(chapter22).toHaveCount(1);
+
+  await chapter22.evaluate((node) => node.scrollIntoView({ block: "start" }));
+  await expect(chapter22).toHaveAttribute("data-reading-active", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const progress = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return progress["123"]?.chapterId;
+      }),
+    )
+    .toBe("22");
+  await expect(chapter11).toHaveCount(1);
+  await expect(chapter33).toHaveCount(1);
+});
+
 test("detail keeps work and chapter ids separate across reading navigation", async ({ page }) => {
   await installTauriMock(page, {
     latestItems: [{ id: "202", name: "ID Split Entry", author: "mock" }],

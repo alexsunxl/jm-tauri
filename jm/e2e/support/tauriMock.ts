@@ -55,6 +55,7 @@ type MockOptions = {
   updateDownloadPath?: string;
   scanDelayMs?: number;
   latestDelayMs?: number;
+  continuousReading?: boolean;
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -107,6 +108,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     localStorage.setItem("jm_auto_sign", "0");
     localStorage.setItem("jm_save_password", "0");
     localStorage.setItem("jm_read_progress_v1", JSON.stringify(readProgress));
+    localStorage.setItem("jm_continuous_reading", payload.continuousReading ? "1" : "0");
 
     let callbackId = 1;
     let eventListenerId = 1;

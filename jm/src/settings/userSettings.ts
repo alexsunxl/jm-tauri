@@ -1,6 +1,7 @@
 const KEY_WHEEL_MULTIPLIER = "jm_read_wheel_multiplier";
 const KEY_READ_IMG_SCALE = "jm_read_image_scale";
 const KEY_READ_MAX_CONCURRENCY = "jm_read_max_concurrency";
+const KEY_CONTINUOUS_READING = "jm_continuous_reading";
 
 export const DEFAULT_WHEEL_MULTIPLIER = 2.2;
 export const MIN_WHEEL_MULTIPLIER = 1;
@@ -13,6 +14,8 @@ export const MAX_READ_IMG_SCALE = 1;
 export const DEFAULT_READ_MAX_CONCURRENCY = 4;
 export const MIN_READ_MAX_CONCURRENCY = 1;
 export const MAX_READ_MAX_CONCURRENCY = 8;
+
+export const DEFAULT_CONTINUOUS_READING = false;
 
 export function getReadWheelMultiplier(): number {
   try {
@@ -50,6 +53,14 @@ export function getReadMaxConcurrency(): number {
   }
 }
 
+export function getContinuousReading(): boolean {
+  try {
+    return localStorage.getItem(KEY_CONTINUOUS_READING) === "1";
+  } catch {
+    return DEFAULT_CONTINUOUS_READING;
+  }
+}
+
 export function setReadWheelMultiplier(v: number) {
   const n = Math.min(MAX_WHEEL_MULTIPLIER, Math.max(MIN_WHEEL_MULTIPLIER, v));
   try {
@@ -74,6 +85,15 @@ export function setReadMaxConcurrency(v: number) {
   const n = Math.min(MAX_READ_MAX_CONCURRENCY, Math.max(MIN_READ_MAX_CONCURRENCY, Math.round(v)));
   try {
     localStorage.setItem(KEY_READ_MAX_CONCURRENCY, String(n));
+  } catch {
+    // ignore
+  }
+  window.dispatchEvent(new Event("jm:settings"));
+}
+
+export function setContinuousReading(enabled: boolean) {
+  try {
+    localStorage.setItem(KEY_CONTINUOUS_READING, enabled ? "1" : "0");
   } catch {
     // ignore
   }

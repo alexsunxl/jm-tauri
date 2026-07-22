@@ -66,6 +66,8 @@ type ReadingPageMenuProps = {
   onLocalScaleFollow: () => void;
   wheelMultiplier: number;
   onWheelMultiplierChange: (value: number) => void;
+  continuousReading: boolean;
+  onContinuousReadingChange: (enabled: boolean) => void;
 };
 
 export default function ReadingPageMenu(props: ReadingPageMenuProps) {
@@ -143,6 +145,18 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
             chapterId={props.chapterId}
             onOpenChapter={props.onOpenChapter}
           />
+          <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-zinc-900">连续阅读</span>
+              <span className="block text-xs text-zinc-500">相邻章节预加载并保留滚动边界</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={props.continuousReading}
+              onChange={(event) => props.onContinuousReadingChange(event.currentTarget.checked)}
+              className="h-4 w-4 flex-none accent-zinc-900"
+            />
+          </label>
           <div className="mt-3 hidden sm:block">
             <div className="text-sm text-zinc-700">
               当前漫画大小（局部）：{" "}

@@ -6,6 +6,7 @@ import {
   DEFAULT_WHEEL_MULTIPLIER,
   DEFAULT_READ_IMG_SCALE,
   DEFAULT_READ_MAX_CONCURRENCY,
+  getContinuousReading,
   getReadMaxConcurrency,
   getReadWheelMultiplier,
   getReadImageScale,
@@ -18,6 +19,7 @@ import {
   setReadMaxConcurrency,
   setReadWheelMultiplier,
   setReadImageScale,
+  setContinuousReading,
   subscribeSettings,
 } from "../settings/userSettings";
 import { useToast } from "../components/Toast";
@@ -82,6 +84,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
   const [imageScale, setImageScale] = useState(() => getReadImageScale());
   const [readConcurrency, setReadConcurrency] = useState(() => getReadMaxConcurrency());
+  const [continuousReading, setContinuousReadingState] = useState(() => getContinuousReading());
   const [socksProxy, setSocksProxy] = useState("");
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -133,6 +136,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       setWheelMultiplier(getReadWheelMultiplier());
       setImageScale(getReadImageScale());
       setReadConcurrency(getReadMaxConcurrency());
+      setContinuousReadingState(getContinuousReading());
     });
   }, []);
 
@@ -606,6 +610,23 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
         <div className="mb-3 text-sm font-medium text-zinc-900">阅读滚动</div>
 
         <div className="space-y-3">
+          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-zinc-900">连续阅读</span>
+              <span className="block text-xs text-zinc-500">预加载相邻章节，可跨章节来回滚动</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={continuousReading}
+              onChange={(event) => {
+                const enabled = event.currentTarget.checked;
+                setContinuousReadingState(enabled);
+                setContinuousReading(enabled);
+              }}
+              className="h-4 w-4 flex-none accent-zinc-900"
+            />
+          </label>
+
           <div className="text-sm text-zinc-700">
             鼠标滚轮滚动倍率：<span className="font-medium text-zinc-900">{wheelMultiplier.toFixed(1)}x</span>
           </div>

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { AlertTriangle, Info, RefreshCw } from "lucide-react";
 import type { Session } from "../auth/session";
@@ -13,11 +13,13 @@ import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
 import {
   DEFAULT_READ_IMG_SCALE,
+  getContinuousReading,
   getReadImageScale,
   getReadMaxConcurrency,
   getReadWheelMultiplier,
   MAX_READ_IMG_SCALE,
   MIN_READ_IMG_SCALE,
+  setContinuousReading,
   setReadWheelMultiplier,
   subscribeSettings,
 } from "../settings/userSettings";
@@ -432,6 +434,7 @@ type ReadingImageListProps = {
   onRetry: (index: number) => void;
   onPageChange: (page: number) => void;
   onWindowChange: (start: number, end: number) => void;
+  onActivePage: (page: number, total: number) => void;
 };
 
 const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListProps) {
@@ -443,6 +446,7 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
     setItemBaseHeights,
     heightPrefix,
     totalHeight,
+    isViewportActive,
   } = useReadingWindow({
     aid: props.aid,
     readTitle: props.readTitle,
@@ -465,6 +469,10 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
   useEffect(() => {
     props.onWindowChange(windowRange.start, windowRange.end);
   }, [props.onWindowChange, windowRange.end, windowRange.start]);
+
+  useEffect(() => {
+    if (isViewportActive) props.onActivePage(currentPage, props.images.length);
+  }, [currentPage, isViewportActive, props.images.length, props.onActivePage]);
 
   const handleMeasured = useCallback(
     (index: number, height: number) => {
@@ -693,6 +701,7 @@ function useReadSettingsState(aid: string) {
   const [wheelMultiplier, setWheelMultiplier] = useState(() => getReadWheelMultiplier());
   const [globalScale, setGlobalScale] = useState(() => getReadImageScale());
   const [localScale, setLocalScale] = useState<number | null>(() => loadLocalImageScale(aid));
+  const [continuousReading, setContinuousReadingState] = useState(() => getContinuousReading());
 
   const effectiveScale = useMemo(
     () => localScale ?? globalScale ?? DEFAULT_READ_IMG_SCALE,
@@ -722,6 +731,11 @@ function useReadSettingsState(aid: string) {
     setReadWheelMultiplier(v);
   }, []);
 
+  const handleContinuousReadingChange = useCallback((enabled: boolean) => {
+    setContinuousReadingState(enabled);
+    setContinuousReading(enabled);
+  }, []);
+
   useEffect(() => {
     wheelMultiplierRef.current = getReadWheelMultiplier();
     maxConcurrencyRef.current = getReadMaxConcurrency();
@@ -730,6 +744,7 @@ function useReadSettingsState(aid: string) {
       maxConcurrencyRef.current = getReadMaxConcurrency();
       setGlobalScale(getReadImageScale());
       setWheelMultiplier(getReadWheelMultiplier());
+      setContinuousReadingState(getContinuousReading());
     });
   }, []);
 
@@ -744,6 +759,8 @@ function useReadSettingsState(aid: string) {
     handleLocalScaleReset,
     handleLocalScaleFollow,
     handleWheelMultiplierChange,
+    continuousReading,
+    handleContinuousReadingChange,
   };
 }
 
@@ -798,9 +815,7 @@ function useChapterLoad(params: {
   aid: string;
   chapterId: string;
   cookies: Session["cookies"];
-  chapterMeta: ChapterMeta;
   showToast: (payload: { ok: boolean; text: string }) => void;
-  pageIndexRef: Ref<number | null>;
 }) {
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [loading, setLoading] = useState(false);
@@ -858,29 +873,6 @@ function useChapterLoad(params: {
         // ignore offline metadata write failures
       });
 
-      const entry: ReadProgress = {
-        aid: params.aid,
-        updatedAt: Date.now(),
-        title: undefined,
-        coverUrl: undefined,
-        chapterId: params.chapterMeta.chapterId,
-        chapterSort: params.chapterMeta.chapterSort,
-        chapterName: params.chapterMeta.chapterName,
-        pageIndex: params.pageIndexRef.current ?? 1,
-      };
-      try {
-        upsertReadProgress(entry);
-        void (async () => {
-          try {
-            const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("api_read_progress_upsert", { entry });
-          } catch {
-            // ignore
-          }
-        })();
-      } catch {
-        // ignore
-      }
     } catch (e) {
       if (token !== chapterLoadToken.current) return;
       try {
@@ -906,15 +898,14 @@ function useChapterLoad(params: {
     } finally {
       if (token === chapterLoadToken.current) setLoading(false);
     }
-  }, [params.aid, params.chapterId, params.chapterMeta, params.cookies, params.pageIndexRef, params.showToast]);
+  }, [params.aid, params.chapterId, params.cookies, params.showToast]);
 
   useEffect(() => {
-    params.pageIndexRef.current = null;
     setChapter(null);
     setScrambleId(null);
     setScrambleError("");
     setSegmentNums(null);
-  }, [params.chapterId, params.pageIndexRef]);
+  }, [params.chapterId]);
 
   useEffect(() => {
     void loadChapter();
@@ -979,9 +970,11 @@ function useReadingWindow(params: {
     end: 0,
   }));
   const [currentPage, setCurrentPage] = useState(1);
+  const [isViewportActive, setIsViewportActive] = useState(false);
   const [itemBaseHeights, setItemBaseHeights] = useState<Record<number, number>>({});
   const savePageTimerRef = useRef<number | null>(null);
   const initialScrollDoneRef = useRef(false);
+  const viewportActiveRef = useRef(false);
 
   const heightPrefix = useMemo(() => {
     const prefix = new Array(params.imagesLength + 1);
@@ -1000,6 +993,8 @@ function useReadingWindow(params: {
     setItemBaseHeights({});
     setWindowRange({ start: 0, end: 0 });
     setCurrentPage(1);
+    setIsViewportActive(false);
+    viewportActiveRef.current = false;
     initialScrollDoneRef.current = false;
   }, [params.resetKey]);
 
@@ -1024,6 +1019,12 @@ function useReadingWindow(params: {
         const viewportH = window.innerHeight;
         const visibleTop = Math.max(0, y - listTop);
         const visibleBottom = visibleTop + viewportH;
+        const listBottom = listTop + totalHeight;
+        const viewportCenter = y + viewportH / 2;
+        const active = viewportCenter >= listTop && viewportCenter < listBottom;
+        const becameActive = active && !viewportActiveRef.current;
+        viewportActiveRef.current = active;
+        setIsViewportActive((prev) => (prev === active ? prev : active));
 
         const findIndex = (offset: number) => {
           let lo = 0;
@@ -1047,7 +1048,7 @@ function useReadingWindow(params: {
         setWindowRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
 
         const nextPage = startIdx + 1;
-        if (nextPage !== params.pageIndexRef.current) {
+        if (active && (becameActive || nextPage !== params.pageIndexRef.current)) {
           params.pageIndexRef.current = nextPage;
           setCurrentPage(nextPage);
           if (savePageTimerRef.current) window.clearTimeout(savePageTimerRef.current);
@@ -1099,6 +1100,7 @@ function useReadingWindow(params: {
     params.overscan,
     params.pageIndexRef,
     params.readTitle,
+    totalHeight,
   ]);
 
   useEffect(() => {
@@ -1107,8 +1109,9 @@ function useReadingWindow(params: {
     if (params.imagesLength === 0) return;
     const targetIndex = Math.min(params.imagesLength - 1, Math.max(0, params.startPage - 1));
     const offset = heightPrefix[targetIndex] ?? 0;
+    const listTop = (listRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY;
     initialScrollDoneRef.current = true;
-    window.scrollTo({ top: offset, behavior: "instant" as ScrollBehavior });
+    window.scrollTo({ top: listTop + offset, behavior: "instant" as ScrollBehavior });
   }, [heightPrefix, params.imagesLength, params.startPage]);
 
   useEffect(() => {
@@ -1125,8 +1128,234 @@ function useReadingWindow(params: {
     setItemBaseHeights,
     heightPrefix,
     totalHeight,
+    isViewportActive,
   };
 }
+
+type ReadingSegmentActivity = {
+  chapterId: string;
+  chapterTitle: string;
+  page: number;
+  total: number;
+};
+
+const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
+  session: Session;
+  aid: string;
+  chapterItem: ChapterNavItem;
+  startPage?: number;
+  readTitle: string;
+  coverUrl: string;
+  effectiveScale: number;
+  active: boolean;
+  showBoundary: boolean;
+  maxConcurrencyRef: Ref<number>;
+  showToast: (payload: { ok: boolean; text: string }) => void;
+  onActivity: (activity: ReadingSegmentActivity) => void;
+  onRegisterReload: (chapterId: string, reload: (() => Promise<void>) | null) => void;
+  sectionRef: (chapterId: string, node: HTMLElement | null) => void;
+}) {
+  const chapterId = toNavigationId(props.chapterItem.id);
+  const chapterTitle = formatChapterTitle(props.chapterItem);
+  const pageIndexRef = useRef<number | null>(null);
+  const [processed, setProcessed] = useState<ProcessedMap>({});
+  const processedRef = useRef(processed);
+  const objectUrlsByIndex = useRef<Map<number, string>>(new Map());
+  const readKeyRef = useRef(makeReadKey(props.aid, chapterId));
+  const genRef = useRef(0);
+  const leavingRef = useRef(false);
+  const segmentConcurrencyRef = useRef(1);
+  const { inflightPages, inflightCount, inflightSet, handleInflightChange, resetInflight } =
+    useInflightTracker();
+  const [pumpToken, setPumpToken] = useState(0);
+  const [visibleWindow, setVisibleWindow] = useState({ start: 0, end: 0 });
+  const [currentPage, setCurrentPage] = useState(1);
+
+  segmentConcurrencyRef.current = props.active
+    ? Math.max(1, props.maxConcurrencyRef.current)
+    : 1;
+
+  const chapterMeta = useMemo<ChapterMeta>(
+    () => ({
+      chapterId,
+      chapterSort: props.chapterItem.sort != null ? String(props.chapterItem.sort) : undefined,
+      chapterName: props.chapterItem.name ?? chapterTitle,
+    }),
+    [chapterId, chapterTitle, props.chapterItem.name, props.chapterItem.sort],
+  );
+  const { chapter, images, loading, scrambleId, scrambleError, segmentNums, loadChapter } =
+    useChapterLoad({
+      aid: props.aid,
+      chapterId,
+      cookies: props.session.cookies,
+      showToast: props.showToast,
+    });
+  const { loadInfoStats, errorCount } = useLoadInfoStats(processed, inflightCount, segmentNums);
+
+  useEffect(() => {
+    if (props.active) setPumpToken((value) => value + 1);
+  }, [props.active]);
+
+  useEffect(() => {
+    processedRef.current = processed;
+  }, [processed]);
+
+  useEffect(() => {
+    props.onRegisterReload(chapterId, loadChapter);
+    return () => props.onRegisterReload(chapterId, null);
+  }, [chapterId, loadChapter, props.onRegisterReload]);
+
+  useEffect(() => {
+    readKeyRef.current = makeReadKey(props.aid, chapterId);
+    leavingRef.current = false;
+    return () => {
+      leavingRef.current = true;
+      genRef.current += 1;
+      resetInflight();
+      for (const url of objectUrlsByIndex.current.values()) {
+        if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      }
+      objectUrlsByIndex.current.clear();
+      const readKey = readKeyRef.current;
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("api_read_cancel", { readKey });
+        } catch {
+          // ignore segment cancellation failures
+        }
+      })();
+    };
+  }, [chapterId, props.aid, resetInflight]);
+
+  const handleWindowChange = useCallback((start: number, end: number) => {
+    setVisibleWindow((prev) =>
+      prev.start === start && prev.end === end ? prev : { start, end },
+    );
+  }, []);
+
+  const onRetry = useCallback((index: number) => {
+    setProcessed((prev) => {
+      const current = prev[index] ?? {};
+      return {
+        ...prev,
+        [index]: { ...current, error: undefined, retries: (current.retries ?? 0) + 1 },
+      };
+    });
+    setPumpToken((value) => value + 1);
+  }, []);
+
+  const handleRetryAllErrors = useCallback(() => {
+    if (errorCount === 0) return;
+    setProcessed((prev) => {
+      let changed = false;
+      const next: ProcessedMap = { ...prev };
+      for (const [key, value] of Object.entries(prev)) {
+        if (!value?.error) continue;
+        next[Number(key)] = {
+          ...value,
+          error: undefined,
+          retries: (value.retries ?? 0) + 1,
+        };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+    setPumpToken((value) => value + 1);
+  }, [errorCount]);
+
+  const handleActivePage = useCallback(
+    (page: number, total: number) => {
+      props.onActivity({ chapterId, chapterTitle, page, total });
+    },
+    [chapterId, chapterTitle, props.onActivity],
+  );
+
+  return (
+    <section
+      ref={(node) => props.sectionRef(chapterId, node)}
+      data-reading-chapter={chapterId}
+      data-reading-active={props.active ? "true" : "false"}
+      className="relative scroll-mt-4"
+    >
+      {props.showBoundary ? (
+        <div className="pointer-events-none sticky top-2 z-20 mb-2 flex justify-center">
+          <div className="rounded-full bg-black/60 px-3 py-1 text-xs text-white shadow backdrop-blur">
+            {chapterTitle}
+          </div>
+        </div>
+      ) : null}
+
+      <ReadingScheduler
+        aid={props.aid}
+        startPage={props.startPage}
+        currentPage={currentPage}
+        visibleStart={visibleWindow.start}
+        visibleEnd={visibleWindow.end}
+        images={images}
+        segmentNums={segmentNums}
+        processedRef={processedRef}
+        setProcessed={setProcessed}
+        objectUrlsByIndex={objectUrlsByIndex}
+        readKeyRef={readKeyRef}
+        genRef={genRef}
+        leavingRef={leavingRef}
+        maxConcurrencyRef={segmentConcurrencyRef}
+        requestToken={pumpToken}
+        resetToken={0}
+        onInflightChange={handleInflightChange}
+      />
+
+      {loading ? (
+        <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
+          <Loading />
+        </div>
+      ) : null}
+
+      {!loading && chapter && images.length === 0 ? (
+        <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
+          没有图片数据（chapter.images 为空）
+        </div>
+      ) : null}
+
+      {props.active && !loading && chapter && images.length ? (
+        <ReadingLoadInfo
+          imagesLength={images.length}
+          imgBase={getImgBase()}
+          scrambleId={scrambleId}
+          scrambleError={scrambleError}
+          segmentReady={Boolean(segmentNums)}
+          stats={loadInfoStats}
+          inflightPages={inflightPages}
+          errorCount={errorCount}
+          onRetryAllErrors={handleRetryAllErrors}
+        />
+      ) : null}
+
+      <ReadingImageList
+        aid={props.aid}
+        chapterId={chapterId}
+        readTitle={props.readTitle}
+        coverUrl={props.coverUrl}
+        startPage={props.startPage}
+        images={images}
+        segmentNums={segmentNums}
+        chapterMeta={chapterMeta}
+        effectiveScale={props.effectiveScale}
+        defaultItemHeight={1060}
+        itemGap={0}
+        overscan={12}
+        processed={processed}
+        inflightSet={inflightSet}
+        pageIndexRef={pageIndexRef}
+        onRetry={onRetry}
+        onPageChange={setCurrentPage}
+        onWindowChange={handleWindowChange}
+        onActivePage={handleActivePage}
+      />
+    </section>
+  );
+});
 
 export default function ReadingPage(props: {
   session: Session;
@@ -1140,9 +1369,6 @@ export default function ReadingPage(props: {
   onGoHome: () => void;
   onOpenChapter: (chapterId: string, chapterTitle: string) => void;
 }) {
-  const DEFAULT_ITEM_HEIGHT = 1060;
-  const ITEM_GAP = 0;
-  const OVERSCAN = 12;
   const {
     wheelMultiplierRef,
     maxConcurrencyRef,
@@ -1154,81 +1380,256 @@ export default function ReadingPage(props: {
     handleLocalScaleReset,
     handleLocalScaleFollow,
     handleWheelMultiplierChange,
+    continuousReading,
+    handleContinuousReadingChange,
   } = useReadSettingsState(props.aid);
-
-  const readKeyRef = useRef<string>(makeReadKey(props.aid, props.chapterId));
-  const leavingRef = useRef(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const pageIndexRef = useRef<number | null>(null);
-  const [processed, setProcessed] = useState<ProcessedMap>({});
-  const processedRef = useRef(processed);
-  const genRef = useRef(0);
-  const objectUrlsByIndex = useRef<Map<number, string>>(new Map());
-  const { inflightPages, inflightCount, inflightSet, handleInflightChange, resetInflight } =
-    useInflightTracker();
-  const [schedulerToken, setSchedulerToken] = useState(0);
-  const [pumpToken, setPumpToken] = useState(0);
-  const [visibleWindow, setVisibleWindow] = useState<{ start: number; end: number }>({
-    start: 0,
-    end: 0,
-  });
+  const leavingRef = useRef(false);
+  const sectionRefs = useRef(new Map<string, HTMLElement>());
+  const reloadRefs = useRef(new Map<string, () => Promise<void>>());
+  const pendingAnchorRef = useRef<{ chapterId: string; top: number } | null>(null);
+  const pendingScrollChapterRef = useRef<string | null>(null);
   const [headerVisible, setHeaderVisible] = useState(false);
-  const hideHeaderTimer = useRef<number | null>(null);
   const [localFavBusy, setLocalFavBusy] = useState(false);
   const [isLocalFav, setIsLocalFav] = useState(false);
+  const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
   const { showToast } = useToast();
-  const chapterMeta = useMemo<ChapterMeta>(() => {
-    const list = Array.isArray(props.chapters) ? props.chapters : [];
-    const current = list.find((c) => toNavigationId(c.id) === props.chapterId);
-    return {
-      chapterId: props.chapterId,
-      chapterSort: current?.sort != null ? String(current.sort) : undefined,
-      chapterName: current?.name ?? props.chapterTitle,
-    };
+
+  const sortedChapters = useMemo(() => {
+    const seen = new Set<string>();
+    const list = (Array.isArray(props.chapters) ? props.chapters : [])
+      .filter((chapter) => {
+        const id = toNavigationId(chapter.id);
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+      .sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
+    if (!seen.has(props.chapterId)) {
+      list.push({ id: props.chapterId, sort: list.length + 1, name: props.chapterTitle });
+    }
+    return list;
   }, [props.chapterId, props.chapterTitle, props.chapters]);
 
-  const { chapter, images, loading, scrambleId, scrambleError, segmentNums, loadChapter } =
-    useChapterLoad({
-      aid: props.aid,
+  const chapterSignature = useMemo(
+    () => sortedChapters.map((chapter) => toNavigationId(chapter.id)).join("\u0000"),
+    [sortedChapters],
+  );
+  const routeChapterIndex = useMemo(
+    () =>
+      Math.max(
+        0,
+        sortedChapters.findIndex((chapter) => toNavigationId(chapter.id) === props.chapterId),
+      ),
+    [props.chapterId, sortedChapters],
+  );
+  const initialSegmentIndices = useMemo(() => {
+    if (!continuousReading || routeChapterIndex >= sortedChapters.length - 1) {
+      return [routeChapterIndex];
+    }
+    return [routeChapterIndex, routeChapterIndex + 1];
+  }, [continuousReading, routeChapterIndex, sortedChapters.length]);
+  const [segmentIndices, setSegmentIndices] = useState<number[]>(initialSegmentIndices);
+  const segmentIndicesRef = useRef(segmentIndices);
+  const [activeActivity, setActiveActivity] = useState<ReadingSegmentActivity>({
+    chapterId: props.chapterId,
+    chapterTitle: props.chapterTitle,
+    page: 1,
+    total: 0,
+  });
+
+  const chapterWindow = useCallback(
+    (centerIndex: number) => {
+      const start = Math.max(0, centerIndex - 1);
+      const end = Math.min(sortedChapters.length - 1, centerIndex + 1);
+      const next: number[] = [];
+      for (let index = start; index <= end; index += 1) next.push(index);
+      return next;
+    },
+    [sortedChapters.length],
+  );
+
+  const commitSegmentIndices = useCallback((next: number[], anchorChapterId?: string) => {
+    const prev = segmentIndicesRef.current;
+    if (prev.length === next.length && prev.every((value, index) => value === next[index])) return;
+    if (anchorChapterId) {
+      const node = sectionRefs.current.get(anchorChapterId);
+      if (node) {
+        pendingAnchorRef.current = {
+          chapterId: anchorChapterId,
+          top: node.getBoundingClientRect().top,
+        };
+      }
+    }
+    segmentIndicesRef.current = next;
+    setSegmentIndices(next);
+  }, []);
+
+  useLayoutEffect(() => {
+    const scrollChapter = pendingScrollChapterRef.current;
+    if (scrollChapter) {
+      const node = sectionRefs.current.get(scrollChapter);
+      if (node) {
+        pendingScrollChapterRef.current = null;
+        pendingAnchorRef.current = null;
+        node.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      return;
+    }
+
+    const anchor = pendingAnchorRef.current;
+    if (!anchor) return;
+    pendingAnchorRef.current = null;
+    const node = sectionRefs.current.get(anchor.chapterId);
+    if (!node) return;
+    const delta = node.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) >= 1) window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+  }, [segmentIndices]);
+
+  const routeKey = props.aid + "\u0000" + props.chapterId + "\u0000" + chapterSignature;
+  const previousRouteKeyRef = useRef(routeKey);
+  useEffect(() => {
+    if (previousRouteKeyRef.current === routeKey) return;
+    previousRouteKeyRef.current = routeKey;
+    leavingRef.current = false;
+    const next =
+      continuousReading && routeChapterIndex < sortedChapters.length - 1
+        ? [routeChapterIndex, routeChapterIndex + 1]
+        : [routeChapterIndex];
+    pendingAnchorRef.current = null;
+    pendingScrollChapterRef.current = null;
+    segmentIndicesRef.current = next;
+    setSegmentIndices(next);
+    setActiveActivity({
       chapterId: props.chapterId,
-      cookies: props.session.cookies,
-      chapterMeta,
-      showToast,
-      pageIndexRef,
+      chapterTitle: props.chapterTitle,
+      page: 1,
+      total: 0,
     });
+    window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+  }, [
+    continuousReading,
+    props.chapterId,
+    props.chapterTitle,
+    routeChapterIndex,
+    routeKey,
+    sortedChapters.length,
+  ]);
 
-  const [currentPage, setCurrentPage] = useState(1);
-  const handlePageChange = useCallback((page: number) => {
-    setCurrentPage((prev) => (prev === page ? prev : page));
-  }, []);
-
-  const chapterNav = useMemo(() => {
-    const list = [...(Array.isArray(props.chapters) ? props.chapters : [])].sort(
-      (a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0),
+  const previousContinuousReadingRef = useRef(continuousReading);
+  useEffect(() => {
+    if (previousContinuousReadingRef.current === continuousReading) return;
+    previousContinuousReadingRef.current = continuousReading;
+    const activeIndex = sortedChapters.findIndex(
+      (chapter) => toNavigationId(chapter.id) === activeActivity.chapterId,
     );
-    const curIdx = list.findIndex((c) => toNavigationId(c.id) === props.chapterId);
-    return {
-      previousChapter: curIdx > 0 ? list[curIdx - 1] : null,
-      nextChapter: curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null,
-    };
-  }, [props.chapterId, props.chapters]);
-  const previousChapter = chapterNav.previousChapter;
-  const nextChapter = chapterNav.nextChapter;
-
-  const rootAid = props.aid;
-
-  const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
-  const requestPump = useCallback(() => {
-    setPumpToken((v) => v + 1);
-  }, []);
-  const handleWindowChange = useCallback((start: number, end: number) => {
-    setVisibleWindow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
-  }, []);
-  const { loadInfoStats, errorCount } = useLoadInfoStats(processed, inflightCount, segmentNums);
+    if (activeIndex < 0) return;
+    commitSegmentIndices(
+      continuousReading ? chapterWindow(activeIndex) : [activeIndex],
+      activeActivity.chapterId,
+    );
+  }, [
+    activeActivity.chapterId,
+    chapterWindow,
+    commitSegmentIndices,
+    continuousReading,
+    sortedChapters,
+  ]);
 
   useEffect(() => {
+    setLocalScale(loadLocalImageScale(props.aid));
+  }, [props.aid, setLocalScale]);
+
+  const handleSectionRef = useCallback((chapterId: string, node: HTMLElement | null) => {
+    if (node) sectionRefs.current.set(chapterId, node);
+    else sectionRefs.current.delete(chapterId);
+  }, []);
+
+  const handleRegisterReload = useCallback(
+    (chapterId: string, reload: (() => Promise<void>) | null) => {
+      if (reload) reloadRefs.current.set(chapterId, reload);
+      else reloadRefs.current.delete(chapterId);
+    },
+    [],
+  );
+
+  const handleSegmentActivity = useCallback(
+    (activity: ReadingSegmentActivity) => {
+      setActiveActivity((prev) =>
+        prev.chapterId === activity.chapterId &&
+        prev.chapterTitle === activity.chapterTitle &&
+        prev.page === activity.page &&
+        prev.total === activity.total
+          ? prev
+          : activity,
+      );
+      if (!continuousReading) return;
+      const activeIndex = sortedChapters.findIndex(
+        (chapter) => toNavigationId(chapter.id) === activity.chapterId,
+      );
+      if (activeIndex >= 0) {
+        commitSegmentIndices(chapterWindow(activeIndex), activity.chapterId);
+      }
+    },
+    [chapterWindow, commitSegmentIndices, continuousReading, sortedChapters],
+  );
+
+  const activeChapterIndex = useMemo(
+    () =>
+      sortedChapters.findIndex(
+        (chapter) => toNavigationId(chapter.id) === activeActivity.chapterId,
+      ),
+    [activeActivity.chapterId, sortedChapters],
+  );
+  const previousChapter =
+    activeChapterIndex > 0 ? sortedChapters[activeChapterIndex - 1] : null;
+  const nextChapter =
+    activeChapterIndex >= 0 && activeChapterIndex < sortedChapters.length - 1
+      ? sortedChapters[activeChapterIndex + 1]
+      : null;
+
+  const handleOpenChapter = useCallback(
+    (chapterId: string, chapterTitle: string, feedbackText?: string) => {
+      const targetIndex = sortedChapters.findIndex(
+        (chapter) => toNavigationId(chapter.id) === chapterId,
+      );
+      if (targetIndex < 0 || !continuousReading) {
+        showToast({
+          ok: true,
+          text: feedbackText ?? "正在切换到 " + chapterTitle,
+          durationMs: 1200,
+        });
+        props.onOpenChapter(chapterId, chapterTitle);
+        return;
+      }
+
+      showToast({
+        ok: true,
+        text: feedbackText ?? "正在滚动到 " + chapterTitle,
+        durationMs: 1200,
+      });
+      const node = sectionRefs.current.get(chapterId);
+      if (node) {
+        node.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      pendingScrollChapterRef.current = chapterId;
+      commitSegmentIndices(chapterWindow(targetIndex));
+    },
+    [
+      chapterWindow,
+      commitSegmentIndices,
+      continuousReading,
+      props.onOpenChapter,
+      showToast,
+      sortedChapters,
+    ],
+  );
+
+  const rootAid = props.aid;
+  useEffect(() => {
     let cancelled = false;
-    const run = async () => {
+    void (async () => {
       if (!rootAid) {
         if (!cancelled) setAlbumMeta(null);
         return;
@@ -1240,62 +1641,43 @@ export default function ReadingPage(props: {
           cookies: props.session.cookies,
         });
         if (cancelled) return;
-        const title = typeof raw?.name === "string" ? raw.name : "";
-        const author = toAuthorText(raw?.author);
-        setAlbumMeta({ title, author });
+        setAlbumMeta({
+          title: typeof raw?.name === "string" ? raw.name : "",
+          author: toAuthorText(raw?.author),
+        });
       } catch {
         if (!cancelled) setAlbumMeta(null);
       }
-    };
-    void run();
+    })();
     return () => {
       cancelled = true;
     };
   }, [props.session.cookies, rootAid]);
 
-  const localFavTitle = useMemo(() => {
-    if (albumMeta?.title) return albumMeta.title;
-    return `AID ${rootAid}`;
-  }, [albumMeta?.title, rootAid]);
-
-  const coverUrl = useMemo(() => {
-    return `${getImgBase()}/media/albums/${rootAid}_3x4.jpg`;
-  }, [rootAid]);
+  const localFavTitle = useMemo(
+    () => albumMeta?.title || "AID " + rootAid,
+    [albumMeta?.title, rootAid],
+  );
+  const coverUrl = useMemo(
+    () => getImgBase() + "/media/albums/" + rootAid + "_3x4.jpg",
+    [rootAid],
+  );
 
   useEffect(() => {
-    if (!rootAid) return;
-    const entry: ReadProgress = {
-      aid: props.aid,
-      updatedAt: Date.now(),
-      title: localFavTitle,
-      coverUrl,
-      chapterId: chapterMeta.chapterId,
-      chapterSort: chapterMeta.chapterSort,
-      chapterName: chapterMeta.chapterName,
-      pageIndex: pageIndexRef.current ?? 1,
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const ok = await invoke<boolean>("api_local_favorite_has", { aid: rootAid });
+        if (!cancelled) setIsLocalFav(Boolean(ok));
+      } catch {
+        if (!cancelled) setIsLocalFav(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    try {
-      upsertReadProgress(entry);
-      void (async () => {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("api_read_progress_upsert", { entry });
-        } catch {
-          // ignore
-        }
-      })();
-    } catch {
-      // ignore
-    }
-  }, [
-    chapterMeta.chapterId,
-    chapterMeta.chapterName,
-    chapterMeta.chapterSort,
-    coverUrl,
-    localFavTitle,
-    props.aid,
-    rootAid,
-  ]);
+  }, [rootAid]);
 
   const handleToggleLocalFav = useCallback(() => {
     void (async () => {
@@ -1309,13 +1691,10 @@ export default function ReadingPage(props: {
           coverUrl,
         });
         setIsLocalFav(Boolean(nowFav));
-        showToast({
-          ok: true,
-          text: nowFav ? "已添加本地收藏" : "已取消本地收藏",
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        showToast({ ok: false, text: `本地收藏失败：${msg}` });
+        showToast({ ok: true, text: nowFav ? "已添加本地收藏" : "已取消本地收藏" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        showToast({ ok: false, text: "本地收藏失败：" + message });
       } finally {
         setLocalFavBusy(false);
       }
@@ -1324,259 +1703,120 @@ export default function ReadingPage(props: {
 
   const handleGoHome = useCallback(() => {
     leavingRef.current = true;
-    genRef.current += 1;
-    resetInflight();
-    const key = readKeyRef.current;
-    void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("api_read_cancel", { readKey: key });
-      } catch {
-        // ignore
-      } finally {
-        props.onGoHome();
-      }
-    })();
-  }, [props.onGoHome, resetInflight]);
+    props.onGoHome();
+  }, [props.onGoHome]);
 
   const handleBack = useCallback(() => {
     leavingRef.current = true;
-    genRef.current += 1;
-    resetInflight();
-    const key = readKeyRef.current;
-    void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("api_read_cancel", { readKey: key });
-      } catch {
-        // ignore
-      } finally {
-        props.onBack();
-      }
-    })();
-  }, [props.onBack, resetInflight]);
+    props.onBack();
+  }, [props.onBack]);
 
   useEffect(() => {
-    const prevKey = readKeyRef.current;
-    const nextKey = makeReadKey(props.aid, props.chapterId);
-    readKeyRef.current = nextKey;
-    leavingRef.current = false;
-
-    // Best-effort cancel previous chapter tasks (e.g., when switching chapters quickly).
-    void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("api_read_cancel", { readKey: prevKey });
-      } catch {
-        // ignore
-      }
-    })();
-
-    genRef.current += 1;
-    setProcessed({});
-    setCurrentPage(1);
-    setVisibleWindow({ start: 0, end: 0 });
-    setLocalScale(loadLocalImageScale(props.aid));
-    resetInflight();
-    setSchedulerToken((v) => v + 1);
-    for (const url of objectUrlsByIndex.current.values()) {
-      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-    }
-    objectUrlsByIndex.current.clear();
-    window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
-  }, [props.chapterId, resetInflight, setCurrentPage, setLocalScale]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const ok = await invoke<boolean>("api_local_favorite_has", { aid: rootAid });
-        if (!cancelled) setIsLocalFav(Boolean(ok));
-      } catch {
-        if (!cancelled) setIsLocalFav(false);
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [rootAid]);
-
-  useEffect(() => {
-    return () => {
-      if (hideHeaderTimer.current) window.clearTimeout(hideHeaderTimer.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    processedRef.current = processed;
-  }, [processed]);
-
-  const onRetry = useCallback(
-    (index: number) => {
-      setProcessed((prev) => {
-        const current = prev[index] ?? {};
-        const retries = (current.retries ?? 0) + 1;
-        return { ...prev, [index]: { ...current, error: undefined, retries } };
+    const element = rootRef.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      if (leavingRef.current || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      let deltaPx = event.deltaY;
+      if (event.deltaMode === 1) deltaPx *= 16;
+      else if (event.deltaMode === 2) deltaPx *= window.innerHeight;
+      if (event.deltaMode !== 1 && Math.abs(deltaPx) < 60) return;
+      event.preventDefault();
+      window.scrollBy({
+        top: deltaPx * wheelMultiplierRef.current,
+        left: 0,
+        behavior: "auto",
       });
-      requestPump();
-    },
-    [requestPump],
-  );
-  const handleRetryAllErrors = useCallback(() => {
-    if (errorCount === 0) return;
-    setProcessed((prev) => {
-      let changed = false;
-      const next: ProcessedMap = { ...prev };
-      for (const [key, value] of Object.entries(prev)) {
-        if (!value?.error) continue;
-        const retries = (value.retries ?? 0) + 1;
-        next[Number(key)] = { ...value, error: undefined, retries };
-        changed = true;
-      }
-      return changed ? next : prev;
-    });
-    requestPump();
-  }, [errorCount, requestPump]);
-
-  useEffect(() => {
-    return () => {
-      leavingRef.current = true;
-      for (const url of objectUrlsByIndex.current.values()) {
-        if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-      }
-      objectUrlsByIndex.current.clear();
-
-      // Best-effort cancel when leaving ReadingPage.
-      const key = readKeyRef.current;
-      void (async () => {
-        try {
-          const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("api_read_cancel", { readKey: key });
-        } catch {
-          // ignore
-        }
-      })();
     };
-  }, []);
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [wheelMultiplierRef]);
+
+  const triggerMenu = useCallback(() => setHeaderVisible((visible) => !visible), []);
+  const showMenu = useCallback(() => setHeaderVisible(true), []);
 
   useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (leavingRef.current) return;
-      if (e.ctrlKey || e.metaKey) return;
-      if (e.shiftKey) return;
-
-      // Heuristic: only amplify "mouse wheel" like deltas.
-      let deltaPx = e.deltaY;
-      if (e.deltaMode === 1) deltaPx *= 16;
-      else if (e.deltaMode === 2) deltaPx *= window.innerHeight;
-
-      const abs = Math.abs(deltaPx);
-      const isLikelyMouse = e.deltaMode === 1 || abs >= 60;
-      if (!isLikelyMouse) return;
-
-      e.preventDefault();
-      window.scrollBy({ top: deltaPx * wheelMultiplierRef.current, left: 0, behavior: "auto" });
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-
-  const triggerMenu = useCallback(() => {
-    setHeaderVisible((v) => !v);
-    // 自动关闭先不要
-    // if (hideHeaderTimer.current) window.clearTimeout(hideHeaderTimer.current);
-    // hideHeaderTimer.current = window.setTimeout(() => {
-    //   setHeaderVisible(false);
-    // }, 2500);
-  }, []);
-
-  const showMenu = useCallback(() => {
-    setHeaderVisible(true);
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing || isEditingKeyTarget(e.target)) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || isEditingKeyTarget(event.target)) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
         showMenu();
         return;
       }
       if (
-        (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
-        !e.repeat &&
-        !e.altKey &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !e.shiftKey &&
+        (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        !event.repeat &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
         window.matchMedia("(min-width: 768px)").matches
       ) {
-        const target = e.key === "ArrowLeft" ? previousChapter : nextChapter;
-        e.preventDefault();
-        if (!target) return;
-        const chapterId = toNavigationId(target.id);
-        if (!chapterId) return;
-        const title = formatChapterTitle(target);
-        showToast({
-          ok: true,
-          text: `正在切换到${e.key === "ArrowLeft" ? "上一话" : "下一话"} ${title}`,
-          durationMs: 1200,
-        });
-        props.onOpenChapter(chapterId, title);
+        event.preventDefault();
+        const target = event.key === "ArrowLeft" ? previousChapter : nextChapter;
+        if (target) {
+          const title = formatChapterTitle(target);
+          handleOpenChapter(
+            toNavigationId(target.id),
+            title,
+            "正在切换到" + (event.key === "ArrowLeft" ? "上一话 " : "下一话 ") + title,
+          );
+        }
         return;
       }
       if (
-        e.key === "Backspace" &&
-        !e.repeat &&
-        !e.altKey &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !e.shiftKey
+        event.key === "Backspace" &&
+        !event.repeat &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
       ) {
-        e.preventDefault();
+        event.preventDefault();
         handleBack();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleBack, nextChapter, previousChapter, props.onOpenChapter, showMenu, showToast]);
+  }, [handleBack, handleOpenChapter, nextChapter, previousChapter, showMenu]);
+
+  const handleRefresh = useCallback(async () => {
+    const reload = reloadRefs.current.get(activeActivity.chapterId);
+    if (reload) await reload();
+  }, [activeActivity.chapterId]);
 
   return (
     <ReadingPullContainer
       rootRef={rootRef}
       className="safe-area-top min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6"
-      loading={loading}
-      onRefresh={loadChapter}
+      loading={false}
+      onRefresh={handleRefresh}
       canPullUp={Boolean(nextChapter)}
       onPullUp={() => {
-        if (!nextChapter) return;
-        props.onOpenChapter(toNavigationId(nextChapter.id), formatChapterTitle(nextChapter));
+        if (nextChapter) {
+          handleOpenChapter(toNavigationId(nextChapter.id), formatChapterTitle(nextChapter));
+        }
       }}
-      resetKey={props.chapterId}
-      onRootClick={(e) => {
-        const target = e.target as HTMLElement | null;
+      resetKey={props.chapterId + "-" + (continuousReading ? "continuous" : "single")}
+      onRootClick={(event) => {
+        const target = event.target as HTMLElement | null;
         if (target?.closest("button, a, input, select, textarea")) return;
-
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        const x = (e as unknown as MouseEvent).clientX;
-        const y = (e as unknown as MouseEvent).clientY;
-        const inCenter = x > w * 0.15 && x < w * 0.85 && y > h * 0.2 && y < h * 0.85;
-        if (!inCenter) return;
-        triggerMenu();
+        const x = (event as unknown as MouseEvent).clientX;
+        const y = (event as unknown as MouseEvent).clientY;
+        const inCenter =
+          x > window.innerWidth * 0.15 &&
+          x < window.innerWidth * 0.85 &&
+          y > window.innerHeight * 0.2 &&
+          y < window.innerHeight * 0.85;
+        if (inCenter) triggerMenu();
       }}
     >
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <ReadingPageMenu
           visible={headerVisible}
-          chapterTitle={props.chapterTitle}
-          chapters={props.chapters}
-          chapterId={props.chapterId}
-          onOpenChapter={props.onOpenChapter}
+          chapterTitle={activeActivity.chapterTitle}
+          chapters={sortedChapters}
+          chapterId={activeActivity.chapterId}
+          onOpenChapter={handleOpenChapter}
           localFavBusy={localFavBusy}
           isLocalFav={isLocalFav}
           onToggleLocalFav={handleToggleLocalFav}
@@ -1594,80 +1834,40 @@ export default function ReadingPage(props: {
           onLocalScaleFollow={handleLocalScaleFollow}
           wheelMultiplier={wheelMultiplier}
           onWheelMultiplierChange={handleWheelMultiplierChange}
-        />
-        <ReadingScheduler
-          aid={props.aid}
-          startPage={props.startPage}
-          currentPage={currentPage}
-          visibleStart={visibleWindow.start}
-          visibleEnd={visibleWindow.end}
-          images={images}
-          segmentNums={segmentNums}
-          processedRef={processedRef}
-          setProcessed={setProcessed}
-          objectUrlsByIndex={objectUrlsByIndex}
-          readKeyRef={readKeyRef}
-          genRef={genRef}
-          leavingRef={leavingRef}
-          maxConcurrencyRef={maxConcurrencyRef}
-          requestToken={pumpToken}
-          resetToken={schedulerToken}
-          onInflightChange={handleInflightChange}
+          continuousReading={continuousReading}
+          onContinuousReadingChange={handleContinuousReadingChange}
         />
 
-        {loading ? (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-            <Loading />
-          </div>
-        ) : null}
+        {segmentIndices.map((chapterIndex) => {
+          const chapterItem = sortedChapters[chapterIndex];
+          if (!chapterItem) return null;
+          const chapterId = toNavigationId(chapterItem.id);
+          return (
+            <ReadingChapterSegment
+              key={chapterId}
+              session={props.session}
+              aid={props.aid}
+              chapterItem={chapterItem}
+              startPage={chapterId === props.chapterId ? props.startPage : undefined}
+              readTitle={localFavTitle}
+              coverUrl={coverUrl}
+              effectiveScale={effectiveScale}
+              active={chapterId === activeActivity.chapterId}
+              showBoundary={continuousReading}
+              maxConcurrencyRef={maxConcurrencyRef}
+              showToast={showToast}
+              onActivity={handleSegmentActivity}
+              onRegisterReload={handleRegisterReload}
+              sectionRef={handleSectionRef}
+            />
+          );
+        })}
 
-        {!loading && chapter && images.length === 0 ? (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-            没有图片数据（chapter.images 为空）
-          </div>
-        ) : null}
-
-        {!loading && chapter && images.length ? (
-          <ReadingLoadInfo
-            imagesLength={images.length}
-            imgBase={getImgBase()}
-            scrambleId={scrambleId}
-            scrambleError={scrambleError}
-            segmentReady={Boolean(segmentNums)}
-            stats={loadInfoStats}
-            inflightPages={inflightPages}
-            errorCount={errorCount}
-            onRetryAllErrors={handleRetryAllErrors}
-          />
-        ) : null}
-
-        <ReadingImageList
-          aid={props.aid}
-          chapterId={props.chapterId}
-          readTitle={localFavTitle}
-          coverUrl={coverUrl}
-          startPage={props.startPage}
-          images={images}
-          segmentNums={segmentNums}
-          chapterMeta={chapterMeta}
-          effectiveScale={effectiveScale}
-          defaultItemHeight={DEFAULT_ITEM_HEIGHT}
-          itemGap={ITEM_GAP}
-          overscan={OVERSCAN}
-          processed={processed}
-          inflightSet={inflightSet}
-          pageIndexRef={pageIndexRef}
-          onRetry={onRetry}
-          onPageChange={handlePageChange}
-          onWindowChange={handleWindowChange}
-        />
-
-        {images.length > 0 ? (
+        {activeActivity.total > 0 ? (
           <div className="fixed bottom-6 right-4 z-30 rounded-full bg-black/50 px-3 py-1 text-xs text-white shadow-md backdrop-blur">
-            {currentPage}/{images.length}
+            {activeActivity.page}/{activeActivity.total}
           </div>
         ) : null}
-
       </div>
     </ReadingPullContainer>
   );
