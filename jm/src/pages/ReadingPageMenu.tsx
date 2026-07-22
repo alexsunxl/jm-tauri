@@ -1,16 +1,6 @@
 import { Bookmark, Home, ArrowLeft, X } from "lucide-react";
-
-type ChapterNavItem = { id: string | number; sort?: string | number; name?: string };
-
-function toId(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (typeof v === "number") return String(v);
-  return "";
-}
-
-function formatChapterTitle(c: ChapterNavItem): string {
-  return `第${c.sort ?? "?"}话${c.name ? `：${c.name}` : ""}`;
-}
+import { formatChapterTitle, toNavigationId } from "../reading/navigation";
+import type { ChapterNavItem } from "../reading/navigation";
 
 function ChapterNavBar(props: {
   chapters: ChapterNavItem[];
@@ -20,7 +10,7 @@ function ChapterNavBar(props: {
   if (props.chapters.length <= 1) return null;
   const list = [...props.chapters].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
   const currentId = props.chapterId;
-  const curIdx = list.findIndex((c) => toId(c.id) === currentId);
+  const curIdx = list.findIndex((c) => toNavigationId(c.id) === currentId);
   const prev = curIdx > 0 ? list[curIdx - 1] : null;
   const next = curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null;
   return (
@@ -32,7 +22,7 @@ function ChapterNavBar(props: {
           disabled={!prev}
           onClick={() => {
             if (!prev) return;
-            props.onOpenChapter(toId(prev.id), formatChapterTitle(prev));
+            props.onOpenChapter(toNavigationId(prev.id), formatChapterTitle(prev));
           }}
         >
           上一话{prev ? ` · ${formatChapterTitle(prev)}` : ""}
@@ -43,7 +33,7 @@ function ChapterNavBar(props: {
           disabled={!next}
           onClick={() => {
             if (!next) return;
-            props.onOpenChapter(toId(next.id), formatChapterTitle(next));
+            props.onOpenChapter(toNavigationId(next.id), formatChapterTitle(next));
           }}
         >
           下一话{next ? ` · ${formatChapterTitle(next)}` : ""}
@@ -64,6 +54,7 @@ type ReadingPageMenuProps = {
   onToggleLocalFav: () => void;
   onGoHome: () => void;
   onBack: () => void;
+  backLabel?: string;
   onClose: () => void;
   localScale: number | null;
   effectiveScale: number;
@@ -142,7 +133,7 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
               >
                 <span className="inline-flex items-center gap-1">
                   <ArrowLeft className="h-4 w-4" />
-                  返回详情
+                  {props.backLabel ?? "返回详情"}
                 </span>
               </button>
             </div>

@@ -23,8 +23,11 @@ import CategoryRankPage from "./pages/CategoryRankPage";
 import HistoryPage from "./pages/HistoryPage";
 import SearchPage from "./pages/SearchPage";
 import SettingsPage from "./pages/SettingsPage";
-
-type ChapterNavItem = { id: string | number; sort?: string | number; name?: string };
+import {
+  createReadingWorkFromChapters,
+  normalizeReadingWork,
+} from "./reading/navigation";
+import type { ChapterNavItem, ReadingTarget, ReadingWork } from "./reading/navigation";
 
 type HomeSub =
   | "home"
@@ -36,11 +39,17 @@ type HomeSub =
   | "settings";
 
 type ReadingState = {
+  work?: ReadingWork;
   chapterTitle?: string;
   chapters?: ChapterNavItem[];
   startPage?: number;
   homeSub?: HomeSub;
   fromPath?: string;
+  returnTo?: {
+    path: string;
+    fromPath?: string;
+    historyBack?: boolean;
+  };
 };
 
 function buildReadingPath(aid: string, chapterId: string, chapterTitle?: string) {
@@ -238,16 +247,21 @@ function FavoritesRoute(props: { session: Session; onAuthExpired: () => void }) 
   const navigate = useNavigate();
   const location = useLocation();
   const fromPath = `${location.pathname}${location.search}`;
-  const openComic = useCallback((aid: string) => navigate(`/detail/${aid}`), [navigate]);
+  const openComic = useCallback(
+    (aid: string) => navigate(`/detail/${aid}`, { state: { fromPath } }),
+    [fromPath, navigate],
+  );
   const openReader = useCallback(
     (aid: string, chapterId: string, chapterTitle: string, chapters: ChapterNavItem[], startPage?: number) =>
       navigate(buildReadingPath(aid, chapterId, chapterTitle), {
         state: {
+          work: createReadingWorkFromChapters(aid, chapters),
           chapterTitle,
           chapters,
           startPage,
           homeSub: "favorites",
           fromPath,
+          returnTo: { path: fromPath },
         } satisfies ReadingState,
       }),
     [fromPath, navigate],
@@ -267,16 +281,21 @@ function LocalFavoritesRoute(props: { session: Session }) {
   const navigate = useNavigate();
   const location = useLocation();
   const fromPath = `${location.pathname}${location.search}`;
-  const openComic = useCallback((aid: string) => navigate(`/detail/${aid}`), [navigate]);
+  const openComic = useCallback(
+    (aid: string) => navigate(`/detail/${aid}`, { state: { fromPath } }),
+    [fromPath, navigate],
+  );
   const openReader = useCallback(
     (aid: string, chapterId: string, chapterTitle: string, chapters: ChapterNavItem[], startPage?: number) =>
       navigate(buildReadingPath(aid, chapterId, chapterTitle), {
         state: {
+          work: createReadingWorkFromChapters(aid, chapters),
           chapterTitle,
           chapters,
           startPage,
           homeSub: "local_favorites",
           fromPath,
+          returnTo: { path: fromPath },
         } satisfies ReadingState,
       }),
     [fromPath, navigate],
@@ -315,16 +334,21 @@ function HistoryRoute(props: { session: Session; onAuthExpired: () => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const fromPath = `${location.pathname}${location.search}`;
-  const openComic = useCallback((aid: string) => navigate(`/detail/${aid}`), [navigate]);
+  const openComic = useCallback(
+    (aid: string) => navigate(`/detail/${aid}`, { state: { fromPath } }),
+    [fromPath, navigate],
+  );
   const openReader = useCallback(
     (aid: string, chapterId: string, chapterTitle: string, chapters: ChapterNavItem[], startPage?: number) =>
       navigate(buildReadingPath(aid, chapterId, chapterTitle), {
         state: {
+          work: createReadingWorkFromChapters(aid, chapters),
           chapterTitle,
           chapters,
           startPage,
           homeSub: "history",
           fromPath,
+          returnTo: { path: fromPath },
         } satisfies ReadingState,
       }),
     [fromPath, navigate],
@@ -364,7 +388,7 @@ function DetailRoute(props: { session: Session; onAuthExpired: () => void }) {
       session={props.session}
       aid={aid}
       onBack={() => {
-        if (fromPath) navigate(fromPath);
+        if (fromPath) navigate(fromPath, { replace: true });
         else navigate(-1);
       }}
       onAuthExpired={props.onAuthExpired}
@@ -376,13 +400,19 @@ function DetailRoute(props: { session: Session; onAuthExpired: () => void }) {
         }
         navigate("/home/search");
       }}
-      onOpenReader={(chapterId, chapterTitle, chapters, startPage) =>
-        navigate(buildReadingPath(aid, chapterId, chapterTitle), {
+      onOpenReader={(target: ReadingTarget, startPage) =>
+        navigate(buildReadingPath(target.work.workId, target.chapterId, target.chapterTitle), {
           state: {
-            chapterTitle,
-            chapters,
+            work: target.work,
+            chapterTitle: target.chapterTitle,
+            chapters: target.work.chapters,
             startPage,
             fromPath: fromPath ?? `/detail/${aid}`,
+            returnTo: {
+              path: `/detail/${aid}`,
+              fromPath,
+              historyBack: true,
+            },
           } satisfies ReadingState,
         })
       }
@@ -399,29 +429,49 @@ function ReadingRoute(props: { session: Session }) {
 
   if (!aid || !chapterId) return <Navigate to="/home/home" replace />;
 
-  const chapters = Array.isArray(state.chapters) ? state.chapters : [];
+  const fallbackChapters = Array.isArray(state.chapters) ? state.chapters : [];
+  const work = normalizeReadingWork(state.work, aid, fallbackChapters);
+  const workId = work.workId || aid;
+  const chapters = work.chapters;
   const chapterTitle = state.chapterTitle ?? searchParams.get("ct") ?? "";
   const startPage = typeof state.startPage === "number" ? state.startPage : undefined;
   const homeSub = normalizeHomeSub(state.homeSub);
-  const fromPath = state.fromPath ?? `/detail/${aid}`;
+  const legacyFromPath = state.fromPath ?? `/detail/${work.requestedAid || workId}`;
+  const returnTo =
+    state.returnTo && typeof state.returnTo.path === "string" && state.returnTo.path
+      ? state.returnTo
+      : { path: legacyFromPath };
 
   return (
     <ReadingPage
       session={props.session}
-      aid={aid}
+      aid={workId}
       chapterId={chapterId}
       chapterTitle={chapterTitle}
       chapters={chapters}
       startPage={startPage}
-      onBack={() => navigate(fromPath)}
+      backLabel={returnTo.path.startsWith("/detail/") ? "返回详情" : "返回列表"}
+      onBack={() => {
+        if (returnTo.historyBack) {
+          navigate(-1);
+          return;
+        }
+        navigate(returnTo.path, {
+          replace: true,
+          state: returnTo.fromPath ? { fromPath: returnTo.fromPath } : undefined,
+        });
+      }}
       onGoHome={() => navigate(`/home/${homeSub}`)}
       onOpenChapter={(nextId, nextTitle) =>
-        navigate(buildReadingPath(aid, nextId, nextTitle), {
+        navigate(buildReadingPath(workId, nextId, nextTitle), {
           replace: true,
           state: {
+            work,
             chapterTitle: nextTitle,
             chapters,
             homeSub,
+            fromPath: legacyFromPath,
+            returnTo,
           } satisfies ReadingState,
         })
       }

@@ -1,15 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import useSWR from "swr";
-import { Download, Loader2 } from "lucide-react";
+import { ArrowLeft, BookOpen, Bookmark, Download, Loader2 } from "lucide-react";
 
 import type { Session } from "../auth/session";
 import { isAuthExpiredError } from "../auth/errors";
 import Button from "../components/Button";
 import { useToast } from "../components/Toast";
 import { getImgBase } from "../config/endpoints";
-import { clearReadProgress, getReadProgress, upsertReadProgress } from "../reading/progress";
+import {
+  clearReadProgressAliases,
+  coalesceReadProgress,
+  getReadProgress,
+} from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
+import {
+  createReadingTarget,
+  createReadingWork,
+  formatChapterTitle,
+  toNavigationId,
+} from "../reading/navigation";
+import type { ReadingTarget } from "../reading/navigation";
 import Loading from "../components/Loading";
 import CoverImage from "../components/CoverImage";
 
@@ -243,12 +254,7 @@ export default function ComicDetailPage(props: {
   onBack: () => void;
   onAuthExpired: () => void;
   onOpenSearch: (query: string) => void;
-  onOpenReader: (
-    chapterId: string,
-    chapterTitle: string,
-    chapters: Array<{ id: string | number; sort?: string | number; name?: string }>,
-    startPage?: number,
-  ) => void;
+  onOpenReader: (target: ReadingTarget, startPage?: number) => void;
 }) {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [localFavBusy, setLocalFavBusy] = useState(false);
@@ -280,8 +286,9 @@ export default function ComicDetailPage(props: {
       try {
         const raw = await invoke<unknown>("api_album", { id: aid, cookies });
         setUsingOfflineAlbum(false);
+        const work = createReadingWork(raw as Album, cacheAid);
         void invoke("api_read_offline_cache_upsert_album", {
-          aid: cacheAid,
+          aid: work.workId || cacheAid,
           album: raw,
         }).catch(() => {
           // ignore offline metadata write failures
@@ -308,20 +315,10 @@ export default function ComicDetailPage(props: {
     },
   );
   const album = (albumData as Album) ?? null;
-
-  const rootAid = useMemo(() => {
-    const series = Array.isArray(album?.series) ? [...album.series] : [];
-    const isMulti = series.length > 1;
-    if (isMulti) {
-      const seriesId = toId(album?.series_id);
-      if (seriesId) return seriesId;
-      series.sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
-      const firstId = toId(series[0]?.id);
-      if (firstId) return firstId;
-    }
-    const albumId = toId(album?.id);
-    return albumId || props.aid;
-  }, [album?.id, album?.series, album?.series_id, props.aid]);
+  const readingWork = useMemo(() => createReadingWork(album, props.aid), [album, props.aid]);
+  const rootAid = readingWork.workId || props.aid;
+  const chapters = readingWork.chapters;
+  const isSingle = Boolean(album) && readingWork.kind === "single";
 
   const coverUrl = useMemo(() => albumCoverUrl(rootAid), [rootAid]);
 
@@ -385,26 +382,9 @@ export default function ComicDetailPage(props: {
   const authorText = useMemo(() => toText(album?.author), [album?.author]);
   const authorList = useMemo(() => normalizeAuthorList(album?.author), [album?.author]);
   const tags = useMemo(() => (Array.isArray(album?.tags) ? album!.tags! : []), [album]);
-  const chapters = useMemo(() => {
-    const s = Array.isArray(album?.series) ? album!.series! : [];
-    const normalized =
-      s.length > 0
-        ? s
-        : album
-          ? [
-              {
-                id: album.id ?? props.aid,
-                sort: 1,
-                name: "",
-              },
-            ]
-          : [];
-    return [...normalized].sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
-  }, [album, props.aid]);
-  const isSingle = Boolean(album) && chapters.length <= 1;
   const singleChapterId = useMemo(() => {
     if (!isSingle) return "";
-    return toId(chapters[0]?.id) || rootAid;
+    return toNavigationId(chapters[0]?.id) || rootAid;
   }, [chapters, isSingle, rootAid]);
   const errorText =
     albumError && !isAuthExpiredError(albumError)
@@ -448,31 +428,29 @@ export default function ComicDetailPage(props: {
   }, [commentList.length, commentPageSize]);
 
   useEffect(() => {
-    const next: ReadProgress = {
-      aid: props.aid,
-      updatedAt: Date.now(),
-      title: album?.name,
-      coverUrl,
-      chapterId: progress?.chapterId,
-      chapterSort: progress?.chapterSort,
-      chapterName: progress?.chapterName,
-      pageIndex: progress?.pageIndex,
-    };
+    if (!album || !rootAid) return;
     try {
-      upsertReadProgress(next);
-      setProgress(next);
+      const result = coalesceReadProgress(rootAid, readingWork.aliases, {
+        title: album.name,
+        coverUrl,
+      });
+      setProgress(result.progress);
+      if (!result.progress) return;
       void (async () => {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("api_read_progress_upsert", { entry: next });
+          await invoke("api_read_progress_upsert", { entry: result.progress });
+          await Promise.all(
+            result.removedAids.map((aid) => invoke("api_read_progress_clear", { aid })),
+          );
         } catch {
-          // ignore
+          // ignore native progress migration failures
         }
       })();
     } catch {
-      // ignore
+      // ignore unavailable localStorage
     }
-  }, [album?.name, coverUrl, progress?.chapterId, progress?.chapterName, progress?.chapterSort, props.aid]);
+  }, [album, coverUrl, readingWork.aliases, rootAid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -511,30 +489,41 @@ export default function ComicDetailPage(props: {
     };
   }, [isSingle, props.session.cookies, rootAid, singleChapterId]);
 
+  const openChapter = useCallback(
+    (chapter: (typeof chapters)[number], startPage = 1) => {
+      const target = createReadingTarget(readingWork, chapter);
+      if (!target) return;
+      props.onOpenReader(target, startPage);
+    },
+    [props.onOpenReader, readingWork],
+  );
+
+  const progressChapter = useMemo(() => {
+    if (!progress?.chapterId) return null;
+    return chapters.find((chapter) => toNavigationId(chapter.id) === progress.chapterId) ?? null;
+  }, [chapters, progress?.chapterId]);
+
   const jumpToProgress = useCallback(() => {
-    if (!progress?.chapterId) return;
-    const chapterId = progress.chapterId;
-    const chapterTitle = progress.chapterSort
-      ? `第${progress.chapterSort}话${progress.chapterName ? `：${progress.chapterName}` : ""}`
-      : `第?话${progress.chapterName ? `：${progress.chapterName}` : ""}`;
-    props.onOpenReader(chapterId, chapterTitle, chapters, progress.pageIndex);
-  }, [
-    chapters,
-    progress?.chapterId,
-    progress?.chapterName,
-    progress?.chapterSort,
-    progress?.pageIndex,
-    props.onOpenReader,
-  ]);
+    if (!progressChapter) return;
+    openChapter(progressChapter, progress?.pageIndex ?? 1);
+  }, [openChapter, progress?.pageIndex, progressChapter]);
+
+  const startOrResumeReading = useCallback(() => {
+    const chapter = progressChapter ?? chapters[0];
+    if (!chapter) return;
+    openChapter(chapter, progressChapter ? progress?.pageIndex ?? 1 : 1);
+  }, [chapters, openChapter, progress?.pageIndex, progressChapter]);
 
   const clearProgress = useCallback(() => {
     try {
-      clearReadProgress(props.aid);
+      clearReadProgressAliases(readingWork.aliases);
       setProgress(null);
       void (async () => {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("api_read_progress_clear", { aid: props.aid });
+          await Promise.all(
+            readingWork.aliases.map((aid) => invoke("api_read_progress_clear", { aid })),
+          );
         } catch {
           // ignore
         }
@@ -543,28 +532,31 @@ export default function ComicDetailPage(props: {
     } catch {
       showToast({ ok: false, text: "清除失败（localStorage不可用）" });
     }
-  }, [props.aid, showToast]);
+  }, [readingWork.aliases, showToast]);
 
   const toggleFavorite = useCallback(async () => {
     if (!album) return;
-    const id = toId(album.id) || props.aid;
     const wasFavorite = Boolean(album.is_favorite);
     setToggleBusy(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("api_favorite_toggle", { aid: id, cookies: props.session.cookies });
+      await invoke("api_favorite_toggle", { aid: rootAid, cookies: props.session.cookies });
       await mutate();
       showToast({
         ok: true,
         text: wasFavorite ? "已取消收藏" : "已添加到收藏",
       });
     } catch (e) {
+      if (isAuthExpiredError(e)) {
+        props.onAuthExpired();
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       showToast({ ok: false, text: `收藏操作失败：${msg}` });
     } finally {
       setToggleBusy(false);
     }
-  }, [album, mutate, props.aid, props.session.cookies, showToast]);
+  }, [album, mutate, props.onAuthExpired, props.session.cookies, rootAid, showToast]);
 
   const toggleLocalFavorite = useCallback(async () => {
     setLocalFavBusy(true);
@@ -595,7 +587,7 @@ export default function ComicDetailPage(props: {
     setCacheProgress({ done: 0, total: 0, failed: 0 });
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const cacheAid = props.aid;
+      const cacheAid = rootAid;
       void invoke("api_cover_cache", { url: coverUrl }).catch(() => {
         // best-effort cover cache for offline detail display
       });
@@ -659,12 +651,16 @@ export default function ComicDetailPage(props: {
       await invoke("api_read_cache_refresh");
       showToast({ ok: failed === 0, text: failed === 0 ? "缓存下载完成" : `缓存完成，失败 ${failed} 张` });
     } catch (e) {
+      if (isAuthExpiredError(e)) {
+        props.onAuthExpired();
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       showToast({ ok: false, text: `缓存失败：${msg}` });
     } finally {
       setCacheDownloading(false);
     }
-  }, [album, chapters, coverUrl, props.aid, props.session.cookies, rootAid, showToast]);
+  }, [album, chapters, coverUrl, props.onAuthExpired, props.session.cookies, rootAid, showToast]);
 
   const sendComment = useCallback(async () => {
     const text = commentInput.trim();
@@ -714,8 +710,8 @@ export default function ComicDetailPage(props: {
   return (
     <div className="safe-area-top min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6">
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
-        <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-          <div className="flex max-w-[520px] min-w-0 flex-col">
+        <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <div className="break-words text-base font-semibold text-zinc-900">
                 {title}
@@ -730,21 +726,31 @@ export default function ComicDetailPage(props: {
               {authorText ? `作者：${authorText}` : null}
             </div>
           </div>
-          <div className="flex flex-wrap justify-end gap-2">
+          <div className="flex flex-wrap gap-2 md:justify-end">
+            <Button
+              className="h-9 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-60"
+              disabled={!album || !chapters.length}
+              onClick={startOrResumeReading}
+            >
+              <BookOpen className="h-4 w-4" />
+              {progressChapter ? "继续阅读" : isSingle ? "开始阅读" : "从第1话开始"}
+            </Button>
             <button
               type="button"
-              className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+              className="inline-flex h-9 items-center gap-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
               onClick={props.onBack}
             >
+              <ArrowLeft className="h-4 w-4" />
               返回
             </button>
             <button
               type="button"
-              className="h-9 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+              className="inline-flex h-9 items-center gap-1 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
               disabled={localFavBusy}
               onClick={toggleLocalFavorite}
               title="仅保存到本机，不影响在线收藏"
             >
+              <Bookmark className="h-4 w-4" />
               {isLocalFav ? "取消本地" : "本地收藏"}
             </button>
             <Button
@@ -773,10 +779,10 @@ export default function ComicDetailPage(props: {
           </div>
         </div>
 
-	        {errorText ? (
-	          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-red-600 shadow-sm">
-	            {errorText}
-	          </div>
+        {errorText ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-red-600 shadow-sm">
+            {errorText}
+          </div>
         ) : null}
 
         {cacheDownloading && cacheProgress ? (
@@ -836,13 +842,13 @@ export default function ComicDetailPage(props: {
                   </div>
                   <div>
                     最近章节：{" "}
-                    {progress?.chapterSort
+                    {progress?.chapterSort != null
                       ? `第${progress.chapterSort}话${progress.chapterName ? `：${progress.chapterName}` : ""}`
                       : "—"}
                   </div>
                   <div>
                     最近页：{" "}
-                    {progress?.pageIndex ? `第${progress.pageIndex}页` : "—"}
+                    {progress?.pageIndex != null ? `第${progress.pageIndex}页` : "—"}
                   </div>
                 </div>
               </div>
@@ -850,7 +856,12 @@ export default function ComicDetailPage(props: {
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 text-sm font-medium text-zinc-900">信息</div>
                 <div className="space-y-1 text-sm text-zinc-700">
-                  <div>AID：{toId(album.id) || props.aid}</div>
+                  <div>作品ID：{rootAid}</div>
+                  {props.aid !== rootAid ? <div>入口ID：{props.aid}</div> : null}
+                  <div>
+                    类型：{isSingle ? "单话" : "多话"}
+                    {!isSingle ? ` · 共 ${chapters.length} 话` : ""}
+                  </div>
                   {isSingle ? (
                     <div className="flex items-center gap-2">
                       <span>漫画页数：</span>
@@ -917,19 +928,12 @@ export default function ComicDetailPage(props: {
                   {chapters.length ? (
                     chapters.map((c) => (
                       <button
-                        key={toId(c.id)}
+                        key={toNavigationId(c.id)}
                         type="button"
                         className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 hover:bg-zinc-50"
-                        onClick={() =>
-                          props.onOpenReader(
-                            toId(c.id),
-                            `第${c.sort ?? "?"}话${c.name ? `：${c.name}` : ""}`,
-                            chapters,
-                            1,
-                          )
-                        }
+                        onClick={() => openChapter(c, 1)}
                       >
-                        第{c.sort ?? "?"}话{c.name ? `：${c.name}` : ""}
+                        {formatChapterTitle(c)}
                       </button>
                     ))
                   ) : (

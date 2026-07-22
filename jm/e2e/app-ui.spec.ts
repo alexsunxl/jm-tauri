@@ -21,6 +21,32 @@ test("home latest updates render as cards and open detail", async ({ page }) => 
   await expect(page.getByText("AID 50001", { exact: true })).toBeVisible();
 });
 
+test("home latest restores persisted data while SWR revalidates", async ({ page }) => {
+  await installTauriMock(page, {
+    latestItems: [{ id: "50003", name: "Persisted Recent", author: "Cached Author" }],
+    latestDelayMs: 800,
+  });
+
+  await page.goto("/#/home/home");
+  await expect(page.getByText("Persisted Recent", { exact: true })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("jm_home_latest_v1:10001")))
+    .not.toBeNull();
+
+  await page.reload();
+  await expect(page.getByText("Persisted Recent", { exact: true })).toBeVisible({ timeout: 300 });
+  await expect(page.getByRole("status", { name: "最近更新加载中" })).toHaveCount(0);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as any).__mockInvokeCalls as Array<{ cmd: string }>).filter((call) => call.cmd === "api_latest")
+          .length,
+      ),
+    )
+    .toBeGreaterThan(0);
+});
+
 test("search input stays editable during IME composition and returns results", async ({ page }) => {
   await installTauriMock(page, {
     searchItems: [
@@ -77,6 +103,7 @@ test("desktop reader arrow keys navigate chapters", async ({ page }) => {
   await page.goto("/#/detail/123");
   await page.getByRole("button", { name: "第2话：Two", exact: true }).click();
   await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+  await expect(page.getByAltText("p1")).toBeVisible();
 
   await page.keyboard.press("ArrowRight");
   await expect(page.getByText("正在切换到下一话 第3话：Three", { exact: true })).toBeVisible();
@@ -85,6 +112,82 @@ test("desktop reader arrow keys navigate chapters", async ({ page }) => {
   await page.keyboard.press("ArrowLeft");
   await expect(page.getByText("正在切换到上一话 第2话：Two", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+});
+
+test("detail keeps work and chapter ids separate across reading navigation", async ({ page }) => {
+  await installTauriMock(page, {
+    latestItems: [{ id: "202", name: "ID Split Entry", author: "mock" }],
+    albumId: "202",
+    albumSeriesId: "100",
+    albumSeries: [
+      { id: "201", sort: 1, name: "One", images: ["00001.jpg"] },
+      { id: "202", sort: 2, name: "Two", images: ["00001.jpg"] },
+    ],
+  });
+
+  await page.goto("/#/home/home");
+  await page.getByText("ID Split Entry", { exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/detail\/202$/);
+  await expect(page.getByText("作品ID：100", { exact: true })).toBeVisible();
+  await expect(page.getByText("入口ID：202", { exact: true })).toBeVisible();
+  await expect(page.getByText("类型：多话 · 共 2 话", { exact: true })).toBeVisible();
+
+  const progressBeforeReading = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}"),
+  );
+  expect(progressBeforeReading).toEqual({});
+
+  await page.getByRole("button", { name: "从第1话开始", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/reading\/100\/201/);
+  await expect(page.getByAltText("p1")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const all = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return all["100"]?.chapterId;
+      }),
+    )
+    .toBe("201");
+
+  await page.keyboard.press("ArrowRight");
+  await expect(page).toHaveURL(/\/#\/reading\/100\/202/);
+  await page.keyboard.press("Backspace");
+  await expect(page).toHaveURL(/\/#\/detail\/202$/);
+  await page.getByRole("button", { name: "返回", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/home\/home$/);
+});
+
+test("detail migrates aliased progress to the canonical work id", async ({ page }) => {
+  await installTauriMock(page, {
+    albumId: "202",
+    albumSeriesId: "100",
+    albumSeries: [
+      { id: "201", sort: 1, name: "One", images: ["00001.jpg"] },
+      { id: "202", sort: 2, name: "Two", images: ["00001.jpg"] },
+    ],
+    readProgress: {
+      "202": {
+        updatedAt: 123456,
+        chapterId: "202",
+        pageIndex: 7,
+      },
+    },
+  });
+
+  await page.goto("/#/detail/202");
+  await expect(page.getByRole("button", { name: "继续阅读", exact: true }).first()).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const all = JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}");
+        return {
+          canonicalChapter: all["100"]?.chapterId,
+          canonicalPage: all["100"]?.pageIndex,
+          aliasExists: Boolean(all["202"]),
+        };
+      }),
+    )
+    .toEqual({ canonicalChapter: "202", canonicalPage: 7, aliasExists: false });
 });
 
 test("local favorites filter/sort tabs persist in localStorage", async ({ page }) => {

@@ -18,6 +18,14 @@ type HomeComicCard = {
   cover: string;
 };
 
+const HOME_LATEST_CACHE_PREFIX = "jm_home_latest_v1";
+const HOME_LATEST_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+type PersistedLatest = {
+  savedAt: number;
+  data: unknown;
+};
+
 function isRecord(value: unknown): value is RawRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -90,6 +98,84 @@ function normalizeLatestItem(item: RawRecord, idx: number): HomeComicCard {
   return { aid, title, author, category, cover };
 }
 
+function latestCacheKey(uid: unknown): string {
+  return `${HOME_LATEST_CACHE_PREFIX}:${String(uid ?? "unknown")}`;
+}
+
+function loadLatestFallback(uid: unknown): unknown | undefined {
+  const key = latestCacheKey(uid);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as PersistedLatest;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.savedAt !== "number" ||
+      !("data" in parsed) ||
+      Date.now() - parsed.savedAt > HOME_LATEST_CACHE_MAX_AGE_MS
+    ) {
+      localStorage.removeItem(key);
+      return undefined;
+    }
+    return parsed.data;
+  } catch {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore unavailable storage
+    }
+    return undefined;
+  }
+}
+
+function saveLatestFallback(uid: unknown, data: unknown): void {
+  try {
+    localStorage.setItem(
+      latestCacheKey(uid),
+      JSON.stringify({ savedAt: Date.now(), data } satisfies PersistedLatest),
+    );
+  } catch {
+    // ignore unavailable or full storage
+  }
+}
+
+function HomeLatestSkeleton(props: { viewMode: "list" | "card" }) {
+  if (props.viewMode === "list") {
+    return (
+      <div className="flex flex-col gap-2" role="status" aria-label="最近更新加载中">
+        {Array.from({ length: 4 }, (_, idx) => (
+          <div
+            key={idx}
+            className="flex h-[82px] animate-pulse items-center gap-3 rounded-md border border-zinc-200 px-3 py-2"
+          >
+            <div className="h-16 w-12 flex-none rounded bg-zinc-200" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-4 w-2/3 rounded bg-zinc-200" />
+              <div className="h-3 w-1/2 rounded bg-zinc-100" />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3" role="status" aria-label="最近更新加载中">
+      {Array.from({ length: 6 }, (_, idx) => (
+        <div key={idx} className="animate-pulse overflow-hidden rounded-md border border-zinc-200">
+          <div className="aspect-[3/4] bg-zinc-200" />
+          <div className="space-y-2 p-2">
+            <div className="h-4 w-4/5 rounded bg-zinc-200" />
+            <div className="h-3 w-3/5 rounded bg-zinc-100" />
+            <div className="h-3 w-2/5 rounded bg-zinc-100" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function HomePage(props: {
   session: Session;
   onAuthExpired: () => void;
@@ -106,6 +192,10 @@ export default function HomePage(props: {
       return "card";
     }
   });
+  const latestFallback = useMemo(
+    () => loadLatestFallback(props.session.user.uid),
+    [props.session.user.uid],
+  );
 
   useEffect(() => {
     try {
@@ -122,8 +212,13 @@ export default function HomePage(props: {
       return invoke<unknown>("api_latest", { page: "0", cookies });
     },
     {
+      fallbackData: latestFallback,
       keepPreviousData: true,
+      revalidateOnMount: true,
       revalidateOnFocus: false,
+      onSuccess: (data) => {
+        saveLatestFallback(props.session.user.uid, data);
+      },
       onError: (err) => {
         if (isAuthExpiredError(err)) {
           props.onAuthExpired();
@@ -198,82 +293,91 @@ export default function HomePage(props: {
             最近更新加载失败：{latestErrorText}
           </div>
         ) : latest === null ? (
-          <Loading />
+          <HomeLatestSkeleton viewMode={viewMode} />
         ) : latestCards.length === 0 ? (
           <div className="rounded-md border border-dashed border-zinc-200 p-3 text-center text-sm text-zinc-500">
             暂无更新
           </div>
-        ) : viewMode === "card" ? (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            {latestCards.map((item, idx) => (
-              <div
-                key={`${item.aid}-${idx}`}
-                className="flex h-full flex-col overflow-hidden rounded-md border border-zinc-200 bg-white"
-              >
-                <button
-                  type="button"
-                  className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-100"
-                  onClick={() => item.aid && props.onOpenComic(item.aid)}
-                  disabled={!item.aid}
-                >
-                  <CoverImage src={item.cover} alt={item.title} className="h-full w-full object-cover" />
-                </button>
-                <div className="flex flex-1 flex-col gap-1 p-2">
-                  <button
-                    type="button"
-                    className="line-clamp-2 text-left text-sm font-medium text-zinc-900 hover:underline"
-                    onClick={() => item.aid && props.onOpenComic(item.aid)}
-                    disabled={!item.aid}
-                  >
-                    {item.title}
-                  </button>
-                  <div className="truncate text-xs text-zinc-600">
-                    {item.author ? `作者：${item.author}` : "作者：—"}
-                  </div>
-                  {item.category ? (
-                    <div className="truncate text-xs text-zinc-500">分类：{item.category}</div>
-                  ) : null}
-                  <div className="truncate text-xs text-zinc-500">AID：{item.aid || "—"}</div>
-                </div>
-              </div>
-            ))}
-          </div>
         ) : (
-          <div className="flex flex-col gap-2">
-            {latestCards.map((item, idx) => (
-              <div
-                key={`${item.aid}-${idx}`}
-                className="flex items-center gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2"
-              >
-                <div className="h-16 w-12 flex-none overflow-hidden rounded bg-zinc-100">
-                  <CoverImage src={item.cover} alt={item.title} className="h-full w-full object-cover" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <button
-                    type="button"
-                    className="line-clamp-2 w-full text-left text-sm font-medium text-zinc-900 hover:underline"
-                    onClick={() => item.aid && props.onOpenComic(item.aid)}
-                    disabled={!item.aid}
-                  >
-                    {item.title}
-                  </button>
-                  <div className="truncate text-xs text-zinc-600">
-                    {item.author ? `作者：${item.author} · ` : ""}
-                    {item.category ? `分类：${item.category} · ` : ""}
-                    AID：{item.aid || "—"}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="h-8 flex-none rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
-                  onClick={() => item.aid && props.onOpenComic(item.aid)}
-                  disabled={!item.aid}
-                >
-                  详情
-                </button>
+          <>
+            {latestErrorText ? (
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+                最近更新刷新失败，正在显示上次内容：{latestErrorText}
               </div>
-            ))}
-          </div>
+            ) : null}
+            {viewMode === "card" ? (
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                {latestCards.map((item, idx) => (
+                  <div
+                    key={`${item.aid}-${idx}`}
+                    className="flex h-full flex-col overflow-hidden rounded-md border border-zinc-200 bg-white"
+                  >
+                    <button
+                      type="button"
+                      className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-100"
+                      onClick={() => item.aid && props.onOpenComic(item.aid)}
+                      disabled={!item.aid}
+                    >
+                      <CoverImage src={item.cover} alt={item.title} className="h-full w-full object-cover" />
+                    </button>
+                    <div className="flex flex-1 flex-col gap-1 p-2">
+                      <button
+                        type="button"
+                        className="line-clamp-2 text-left text-sm font-medium text-zinc-900 hover:underline"
+                        onClick={() => item.aid && props.onOpenComic(item.aid)}
+                        disabled={!item.aid}
+                      >
+                        {item.title}
+                      </button>
+                      <div className="truncate text-xs text-zinc-600">
+                        {item.author ? `作者：${item.author}` : "作者：—"}
+                      </div>
+                      {item.category ? (
+                        <div className="truncate text-xs text-zinc-500">分类：{item.category}</div>
+                      ) : null}
+                      <div className="truncate text-xs text-zinc-500">AID：{item.aid || "—"}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {latestCards.map((item, idx) => (
+                  <div
+                    key={`${item.aid}-${idx}`}
+                    className="flex items-center gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2"
+                  >
+                    <div className="h-16 w-12 flex-none overflow-hidden rounded bg-zinc-100">
+                      <CoverImage src={item.cover} alt={item.title} className="h-full w-full object-cover" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        className="line-clamp-2 w-full text-left text-sm font-medium text-zinc-900 hover:underline"
+                        onClick={() => item.aid && props.onOpenComic(item.aid)}
+                        disabled={!item.aid}
+                      >
+                        {item.title}
+                      </button>
+                      <div className="truncate text-xs text-zinc-600">
+                        {item.author ? `作者：${item.author} · ` : ""}
+                        {item.category ? `分类：${item.category} · ` : ""}
+                        AID：{item.aid || "—"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="h-8 flex-none rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 hover:bg-zinc-50 disabled:opacity-60"
+                      onClick={() => item.aid && props.onOpenComic(item.aid)}
+                      disabled={!item.aid}
+                    >
+                      详情
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

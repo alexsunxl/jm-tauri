@@ -7,6 +7,8 @@ import Loading from "../components/Loading";
 import { useToast } from "../components/Toast";
 import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
+import { formatChapterTitle, toNavigationId } from "../reading/navigation";
+import type { ChapterNavItem } from "../reading/navigation";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
 import {
@@ -386,13 +388,10 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
 
 type Chapter = {
   id: string | number;
-  series_id?: string | number;
   name?: string;
   series?: Array<{ id: string | number; sort?: string | number; name?: string }>;
   images?: string[];
 };
-
-type ChapterNavItem = { id: string | number; sort?: string | number; name?: string };
 
 type OfflineChapterMeta = {
   chapter?: unknown | null;
@@ -536,12 +535,6 @@ function pictureNameFromPath(p: string): string {
   return base.split(".")[0] ?? "";
 }
 
-function toId(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (typeof v === "number") return String(v);
-  return "";
-}
-
 function isEditingKeyTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -555,10 +548,6 @@ function toAuthorText(v: unknown): string {
     return v.map((x) => toAuthorText(x)).filter(Boolean).join(", ");
   }
   return "";
-}
-
-function formatChapterTitle(c: ChapterNavItem): string {
-  return `第${c.sort ?? "?"}话${c.name ? `：${c.name}` : ""}`;
 }
 
 function getLocalImageScaleKey(aid: string) {
@@ -1146,6 +1135,7 @@ export default function ReadingPage(props: {
   chapterTitle: string;
   chapters: ChapterNavItem[];
   startPage?: number;
+  backLabel?: string;
   onBack: () => void;
   onGoHome: () => void;
   onOpenChapter: (chapterId: string, chapterTitle: string) => void;
@@ -1189,7 +1179,7 @@ export default function ReadingPage(props: {
   const { showToast } = useToast();
   const chapterMeta = useMemo<ChapterMeta>(() => {
     const list = Array.isArray(props.chapters) ? props.chapters : [];
-    const current = list.find((c) => toId(c.id) === props.chapterId);
+    const current = list.find((c) => toNavigationId(c.id) === props.chapterId);
     return {
       chapterId: props.chapterId,
       chapterSort: current?.sort != null ? String(current.sort) : undefined,
@@ -1216,7 +1206,7 @@ export default function ReadingPage(props: {
     const list = [...(Array.isArray(props.chapters) ? props.chapters : [])].sort(
       (a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0),
     );
-    const curIdx = list.findIndex((c) => toId(c.id) === props.chapterId);
+    const curIdx = list.findIndex((c) => toNavigationId(c.id) === props.chapterId);
     return {
       previousChapter: curIdx > 0 ? list[curIdx - 1] : null,
       nextChapter: curIdx >= 0 && curIdx < list.length - 1 ? list[curIdx + 1] : null,
@@ -1225,18 +1215,7 @@ export default function ReadingPage(props: {
   const previousChapter = chapterNav.previousChapter;
   const nextChapter = chapterNav.nextChapter;
 
-  const rootAid = useMemo(() => {
-    const list = Array.isArray(props.chapters) ? [...props.chapters] : [];
-    const isMulti = list.length > 1;
-    if (isMulti) {
-      const seriesId = toId(chapter?.series_id);
-      if (seriesId) return seriesId;
-      list.sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
-      const firstId = toId(list[0]?.id);
-      if (firstId) return firstId;
-    }
-    return props.aid;
-  }, [chapter?.series_id, props.aid, props.chapters]);
+  const rootAid = props.aid;
 
   const [albumMeta, setAlbumMeta] = useState<{ title: string; author: string } | null>(null);
   const requestPump = useCallback(() => {
@@ -1539,7 +1518,7 @@ export default function ReadingPage(props: {
         const target = e.key === "ArrowLeft" ? previousChapter : nextChapter;
         e.preventDefault();
         if (!target) return;
-        const chapterId = toId(target.id);
+        const chapterId = toNavigationId(target.id);
         if (!chapterId) return;
         const title = formatChapterTitle(target);
         showToast({
@@ -1575,7 +1554,7 @@ export default function ReadingPage(props: {
       canPullUp={Boolean(nextChapter)}
       onPullUp={() => {
         if (!nextChapter) return;
-        props.onOpenChapter(toId(nextChapter.id), formatChapterTitle(nextChapter));
+        props.onOpenChapter(toNavigationId(nextChapter.id), formatChapterTitle(nextChapter));
       }}
       resetKey={props.chapterId}
       onRootClick={(e) => {
@@ -1603,6 +1582,7 @@ export default function ReadingPage(props: {
           onToggleLocalFav={handleToggleLocalFav}
           onGoHome={handleGoHome}
           onBack={handleBack}
+          backLabel={props.backLabel}
           onClose={() => setHeaderVisible(false)}
           localScale={localScale}
           effectiveScale={effectiveScale}

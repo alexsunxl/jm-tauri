@@ -9,6 +9,13 @@ type CoverImageProps = {
 const coverCache = new Map<string, string>();
 const coverFetches = new Map<string, Promise<string>>();
 
+function immediateCover(src: string): string | null {
+  if (!src) return null;
+  const cached = coverCache.get(src);
+  if (cached) return cached;
+  return /^https?:\/\//.test(src) ? null : src;
+}
+
 async function fetchCover(src: string): Promise<string> {
   const cached = coverCache.get(src);
   if (cached) return cached;
@@ -33,38 +40,34 @@ async function fetchCover(src: string): Promise<string> {
 }
 
 export default function CoverImage(props: CoverImageProps) {
-  const [resolved, setResolved] = useState<string | null>(null);
+  const source = props.src?.trim() ?? "";
+  const [resolved, setResolved] = useState<{ source: string; url: string | null }>(() => ({
+    source,
+    url: immediateCover(source),
+  }));
 
   useEffect(() => {
     let cancelled = false;
-    const src = props.src?.trim();
-    if (!src) {
-      setResolved(null);
+    const immediate = immediateCover(source);
+    if (!source || immediate) {
+      setResolved({ source, url: immediate });
       return;
     }
-    const cached = coverCache.get(src);
-    if (cached) {
-      setResolved(cached);
-      return;
-    }
-    if (!/^https?:\/\//.test(src)) {
-      setResolved(src);
-      return;
-    }
+    setResolved({ source, url: null });
     void (async () => {
       try {
-        const url = await fetchCover(src);
-        if (!cancelled) setResolved(url);
+        const url = await fetchCover(source);
+        if (!cancelled) setResolved({ source, url });
       } catch {
-        if (!cancelled) setResolved(src);
+        if (!cancelled) setResolved({ source, url: source });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [props.src]);
+  }, [source]);
 
-  const src = resolved ?? props.src;
+  const src = resolved.source === source ? resolved.url : immediateCover(source);
   if (!src) {
     return <div className={props.className} />;
   }

@@ -30,6 +30,8 @@ type MockOptions = {
   searchItems?: MockSearchItem[];
   latestItems?: MockLatestItem[];
   promoteBlocks?: unknown[];
+  albumId?: string;
+  albumSeriesId?: string;
   albumSeries?: MockAlbumChapter[];
   chapterImages?: Record<string, string[]>;
   followAids?: string[];
@@ -52,6 +54,7 @@ type MockOptions = {
   };
   updateDownloadPath?: string;
   scanDelayMs?: number;
+  latestDelayMs?: number;
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -72,6 +75,10 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
       typeof payload.scanDelayMs === "number" && Number.isFinite(payload.scanDelayMs)
         ? Math.max(0, payload.scanDelayMs)
         : 30;
+    const latestDelayMs =
+      typeof payload.latestDelayMs === "number" && Number.isFinite(payload.latestDelayMs)
+        ? Math.max(0, payload.latestDelayMs)
+        : 0;
     const updateDownloadPath =
       typeof payload.updateDownloadPath === "string" && payload.updateDownloadPath.trim()
         ? payload.updateDownloadPath.trim()
@@ -162,6 +169,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
       (window as any).__mockInvokeCalls.push({ cmd, args: args ?? {} });
       switch (cmd) {
         case "api_latest": {
+          if (latestDelayMs) await sleep(latestDelayMs);
           return {
             total: latestItems.length,
             content: latestItems,
@@ -311,6 +319,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         }
         case "api_album": {
           const aid = String(args?.id ?? "0");
+          const albumId = typeof payload.albumId === "string" ? payload.albumId : aid;
+          const seriesId = typeof payload.albumSeriesId === "string" ? payload.albumSeriesId : albumId;
           const series = albumSeries.length
             ? albumSeries.map((chapter) => ({
                 id: chapter.id,
@@ -319,9 +329,9 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
               }))
             : [{ id: aid, sort: 1, name: "第1话" }];
           return {
-            id: aid,
-            series_id: aid,
-            name: `AID ${aid}`,
+            id: albumId,
+            series_id: seriesId,
+            name: `AID ${albumId}`,
             author: "mock",
             series,
           };
