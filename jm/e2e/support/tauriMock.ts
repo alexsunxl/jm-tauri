@@ -56,6 +56,7 @@ type MockOptions = {
   scanDelayMs?: number;
   latestDelayMs?: number;
   continuousReading?: boolean;
+  blockedReaderChapters?: string[];
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -117,6 +118,14 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const cancelledScanIds = new Set<string>();
 
     (window as any).__mockInvokeCalls = [];
+    const readerImageReleases = new Map<string, () => void>();
+    const readerImageGates = new Map(
+      (payload.blockedReaderChapters ?? []).map((id) => [
+        id,
+        new Promise<void>((resolve) => readerImageReleases.set(id, resolve)),
+      ]),
+    );
+    (window as any).__mockReleaseChapterImages = (id: string) => readerImageReleases.get(id)?.();
     (window as any).isTauri = true;
 
     (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
@@ -362,6 +371,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
           return pictureNames.map(() => 0);
         }
         case "api_image_descramble_file": {
+          const chapterId = String(args?.url ?? "").match(/\/photos\/(\d+)\//)?.[1];
+          if (chapterId) await readerImageGates.get(chapterId);
           return "/tmp/mock-reader-image.jpg";
         }
         case "api_local_favorite_has": {

@@ -435,6 +435,7 @@ type ReadingImageListProps = {
   onPageChange: (page: number) => void;
   onWindowChange: (start: number, end: number) => void;
   onActivePage: (page: number, total: number) => void;
+  onPreloadReady: () => void;
 };
 
 const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListProps) {
@@ -473,6 +474,16 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
   useEffect(() => {
     if (isViewportActive) props.onActivePage(currentPage, props.images.length);
   }, [currentPage, isViewportActive, props.images.length, props.onActivePage]);
+
+  // Wait for the restored viewport's first image to settle, not the chapter's last page.
+  const preloadReady = isViewportActive && (
+    itemBaseHeights[currentPage - 1] != null || Boolean(props.processed[currentPage - 1]?.error)
+  );
+  useEffect(() => {
+    if (!preloadReady) return;
+    const frame = requestAnimationFrame(props.onPreloadReady);
+    return () => cancelAnimationFrame(frame);
+  }, [preloadReady, props.onPreloadReady]);
 
   const handleMeasured = useCallback(
     (index: number, height: number) => {
@@ -687,7 +698,7 @@ function ProcessedImage(props: {
             const ratio = img.naturalHeight / img.naturalWidth;
             const width = ref.current?.clientWidth ?? img.clientWidth;
             const next = Math.max(1, Math.round(width * ratio));
-            if (next !== props.height) props.onMeasured(props.index, next);
+            props.onMeasured(props.index, next);
           }
         }}
       />
@@ -1003,6 +1014,7 @@ function useReadingWindow(params: {
     const recompute = () => {
       if (raf) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
+        if (!initialScrollDoneRef.current) return;
         const total = params.imagesLength;
         if (!total) {
           setWindowRange({ start: 0, end: 0 });
@@ -1104,14 +1116,16 @@ function useReadingWindow(params: {
   ]);
 
   useEffect(() => {
-    if (!params.startPage || params.startPage <= 1) return;
     if (initialScrollDoneRef.current) return;
     if (params.imagesLength === 0) return;
-    const targetIndex = Math.min(params.imagesLength - 1, Math.max(0, params.startPage - 1));
+    if (!listRef.current) return;
+    const targetIndex = Math.min(params.imagesLength - 1, Math.max(0, (params.startPage ?? 1) - 1));
     const offset = heightPrefix[targetIndex] ?? 0;
     const listTop = (listRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY;
     initialScrollDoneRef.current = true;
-    window.scrollTo({ top: listTop + offset, behavior: "instant" as ScrollBehavior });
+    if (targetIndex > 0) {
+      window.scrollTo({ top: listTop + offset, behavior: "instant" as ScrollBehavior });
+    }
   }, [heightPrefix, params.imagesLength, params.startPage]);
 
   useEffect(() => {
@@ -1152,6 +1166,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
   maxConcurrencyRef: Ref<number>;
   showToast: (payload: { ok: boolean; text: string }) => void;
   onActivity: (activity: ReadingSegmentActivity) => void;
+  onPreloadReady: (chapterId: string) => void;
   onRegisterReload: (chapterId: string, reload: (() => Promise<void>) | null) => void;
   sectionRef: (chapterId: string, node: HTMLElement | null) => void;
 }) {
@@ -1271,6 +1286,10 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
     [chapterId, chapterTitle, props.onActivity],
   );
 
+  const handlePreloadReady = useCallback(() => {
+    if (props.active) props.onPreloadReady(chapterId);
+  }, [chapterId, props.active, props.onPreloadReady]);
+
   return (
     <section
       ref={(node) => props.sectionRef(chapterId, node)}
@@ -1352,6 +1371,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
         onPageChange={setCurrentPage}
         onWindowChange={handleWindowChange}
         onActivePage={handleActivePage}
+        onPreloadReady={handlePreloadReady}
       />
     </section>
   );
@@ -1423,14 +1443,9 @@ export default function ReadingPage(props: {
       ),
     [props.chapterId, sortedChapters],
   );
-  const initialSegmentIndices = useMemo(() => {
-    if (!continuousReading || routeChapterIndex >= sortedChapters.length - 1) {
-      return [routeChapterIndex];
-    }
-    return [routeChapterIndex, routeChapterIndex + 1];
-  }, [continuousReading, routeChapterIndex, sortedChapters.length]);
-  const [segmentIndices, setSegmentIndices] = useState<number[]>(initialSegmentIndices);
+  const [segmentIndices, setSegmentIndices] = useState<number[]>(() => [routeChapterIndex]);
   const segmentIndicesRef = useRef(segmentIndices);
+  const preloadReadyChapterRef = useRef<string | null>(null);
   const [activeActivity, setActiveActivity] = useState<ReadingSegmentActivity>({
     chapterId: props.chapterId,
     chapterTitle: props.chapterTitle,
@@ -1492,10 +1507,8 @@ export default function ReadingPage(props: {
     if (previousRouteKeyRef.current === routeKey) return;
     previousRouteKeyRef.current = routeKey;
     leavingRef.current = false;
-    const next =
-      continuousReading && routeChapterIndex < sortedChapters.length - 1
-        ? [routeChapterIndex, routeChapterIndex + 1]
-        : [routeChapterIndex];
+    const next = [routeChapterIndex];
+    preloadReadyChapterRef.current = null;
     pendingAnchorRef.current = null;
     pendingScrollChapterRef.current = null;
     segmentIndicesRef.current = next;
@@ -1508,29 +1521,25 @@ export default function ReadingPage(props: {
     });
     window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
   }, [
-    continuousReading,
     props.chapterId,
     props.chapterTitle,
     routeChapterIndex,
     routeKey,
-    sortedChapters.length,
   ]);
 
   const previousContinuousReadingRef = useRef(continuousReading);
   useEffect(() => {
     if (previousContinuousReadingRef.current === continuousReading) return;
     previousContinuousReadingRef.current = continuousReading;
+    if (continuousReading) return;
+    preloadReadyChapterRef.current = null;
     const activeIndex = sortedChapters.findIndex(
       (chapter) => toNavigationId(chapter.id) === activeActivity.chapterId,
     );
     if (activeIndex < 0) return;
-    commitSegmentIndices(
-      continuousReading ? chapterWindow(activeIndex) : [activeIndex],
-      activeActivity.chapterId,
-    );
+    commitSegmentIndices([activeIndex], activeActivity.chapterId);
   }, [
     activeActivity.chapterId,
-    chapterWindow,
     commitSegmentIndices,
     continuousReading,
     sortedChapters,
@@ -1563,15 +1572,27 @@ export default function ReadingPage(props: {
           ? prev
           : activity,
       );
-      if (!continuousReading) return;
-      const activeIndex = sortedChapters.findIndex(
-        (chapter) => toNavigationId(chapter.id) === activity.chapterId,
-      );
-      if (activeIndex >= 0) {
-        commitSegmentIndices(chapterWindow(activeIndex), activity.chapterId);
-      }
     },
-    [chapterWindow, commitSegmentIndices, continuousReading, sortedChapters],
+    [],
+  );
+
+  const handlePreloadReady = useCallback(
+    (chapterId: string) => {
+      if (!continuousReading || preloadReadyChapterRef.current === chapterId) return;
+      const activeIndex = sortedChapters.findIndex(
+        (chapter) => toNavigationId(chapter.id) === chapterId,
+      );
+      if (activeIndex < 0) return;
+      // On entry, only append the next chapter. Prepending an unloaded previous
+      // chapter would move the restored position as its images arrive.
+      const next =
+        preloadReadyChapterRef.current == null && chapterId === props.chapterId
+          ? chapterWindow(activeIndex).filter((index) => index >= activeIndex)
+          : chapterWindow(activeIndex);
+      preloadReadyChapterRef.current = chapterId;
+      commitSegmentIndices(next, chapterId);
+    },
+    [chapterWindow, commitSegmentIndices, continuousReading, props.chapterId, sortedChapters],
   );
 
   const activeChapterIndex = useMemo(
@@ -1857,6 +1878,7 @@ export default function ReadingPage(props: {
               maxConcurrencyRef={maxConcurrencyRef}
               showToast={showToast}
               onActivity={handleSegmentActivity}
+              onPreloadReady={handlePreloadReady}
               onRegisterReload={handleRegisterReload}
               sectionRef={handleSectionRef}
             />

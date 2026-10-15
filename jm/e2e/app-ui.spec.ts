@@ -114,6 +114,79 @@ test("desktop reader arrow keys navigate chapters", async ({ page }) => {
   await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
 });
 
+test("continuous reader waits for entry images then preloads without scrolling near the end", async ({ page }) => {
+  await installTauriMock(page, {
+    continuousReading: true,
+    blockedReaderChapters: ["22"],
+    albumSeries: [
+      { id: "11", sort: 1, name: "One" },
+      { id: "22", sort: 2, name: "Two", images: Array.from({ length: 40 }, (_, i) => `${i + 1}.jpg`) },
+      { id: "33", sort: 3, name: "Three" },
+    ],
+  });
+
+  await page.goto("/#/detail/123");
+  await page.getByRole("button", { name: "第2话：Two", exact: true }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__mockInvokeCalls.some((call: any) =>
+      call.cmd === "api_image_descramble_file" && call.args.url.includes("/photos/22/")),
+  )).toBe(true);
+  await expect(page.locator("[data-reading-chapter]")).toHaveCount(1);
+  expect(await page.evaluate(() =>
+    [...new Set((window as any).__mockInvokeCalls
+      .filter((call: any) => call.cmd === "api_chapter")
+      .map((call: any) => call.args.id))],
+  )).toEqual(["22"]);
+
+  await page.evaluate(() => (window as any).__mockReleaseChapterImages("22"));
+  const current = page.locator('[data-reading-chapter="22"]');
+  await expect(current.getByAltText("p1", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-reading-chapter="33"]')).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__mockInvokeCalls.some((call: any) =>
+      call.cmd === "api_image_descramble_file" && call.args.url.includes("/photos/33/")),
+  )).toBe(true);
+  await expect(page.locator('[data-reading-chapter="11"]')).toHaveCount(0);
+  await expect(current).toHaveAttribute("data-reading-active", "true");
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("continuous reader restores the target position before preloading the next chapter", async ({ page }) => {
+  await installTauriMock(page, {
+    continuousReading: true,
+    blockedReaderChapters: ["22", "33"],
+    albumSeries: [
+      { id: "11", sort: 1, name: "One" },
+      { id: "22", sort: 2, name: "Two", images: Array.from({ length: 40 }, (_, i) => `${i + 1}.jpg`) },
+      { id: "33", sort: 3, name: "Three" },
+    ],
+    readProgress: { "123": { updatedAt: 123456, chapterId: "22", pageIndex: 7 } },
+  });
+
+  await page.goto("/#/detail/123");
+  await page.getByRole("button", { name: "继续阅读", exact: true }).first().click();
+  const current = page.locator('[data-reading-chapter="22"]');
+  await expect(current).toHaveAttribute("data-reading-active", "true");
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
+  await expect(page.locator("[data-reading-chapter]")).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("jm_read_progress_v1") ?? "{}")["123"]?.pageIndex,
+  )).toBe(7);
+
+  await page.evaluate(() => (window as any).__mockReleaseChapterImages("22"));
+  await expect(page.locator('[data-reading-chapter="33"]')).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__mockInvokeCalls.some((call: any) =>
+      call.cmd === "api_image_descramble_file" && call.args.url.includes("/photos/33/")),
+  )).toBe(true);
+  const topBeforeNextImage = await current.evaluate((node) => node.getBoundingClientRect().top);
+  await page.evaluate(() => (window as any).__mockReleaseChapterImages("33"));
+  await expect(page.locator('[data-reading-chapter="33"]').getByAltText("p1")).toHaveCount(1);
+  await expect(current).toHaveAttribute("data-reading-active", "true");
+  await expect(page.locator('[data-reading-chapter="11"]')).toHaveCount(0);
+  expect(await current.evaluate((node) => node.getBoundingClientRect().top)).toBe(topBeforeNextImage);
+});
+
 test("continuous reader preloads and keeps adjacent chapters scrollable both ways", async ({ page }) => {
   await installTauriMock(page, {
     continuousReading: true,
