@@ -90,11 +90,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android components
         run: |
           sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;29.0.13846066"
-          yes | sdkmanager --licenses
 
       - name: Install dependencies
         run: pnpm install
