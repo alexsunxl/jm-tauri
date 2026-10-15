@@ -57,6 +57,8 @@ type MockOptions = {
   latestDelayMs?: number;
   continuousReading?: boolean;
   blockedReaderChapters?: string[];
+  readerImageDelayMs?: number;
+  readerNetworkBytesPerSecond?: number;
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -118,6 +120,9 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const cancelledScanIds = new Set<string>();
 
     (window as any).__mockInvokeCalls = [];
+    (window as any).__mockActiveReaderRequests = 0;
+    (window as any).__mockPeakReaderRequests = 0;
+    (window as any).__mockReaderBytesPerSecond = payload.readerNetworkBytesPerSecond ?? 0;
     const readerImageReleases = new Map<string, () => void>();
     const readerImageGates = new Map(
       (payload.blockedReaderChapters ?? []).map((id) => [
@@ -373,7 +378,26 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         case "api_image_descramble_file": {
           const chapterId = String(args?.url ?? "").match(/\/photos\/(\d+)\//)?.[1];
           if (chapterId) await readerImageGates.get(chapterId);
-          return "/tmp/mock-reader-image.jpg";
+          (window as any).__mockActiveReaderRequests += 1;
+          (window as any).__mockPeakReaderRequests = Math.max(
+            (window as any).__mockPeakReaderRequests, (window as any).__mockActiveReaderRequests,
+          );
+          const network = args?.onNetworkProgress;
+          let timer: number | undefined;
+          if (payload.readerNetworkBytesPerSecond != null) {
+            network?.onmessage({ phase: "start", bytes: 0 });
+            timer = window.setInterval(() => network?.onmessage({
+              phase: "progress", bytes: (window as any).__mockReaderBytesPerSecond / 4,
+            }), 250);
+          }
+          try {
+            if (payload.readerImageDelayMs) await sleep(payload.readerImageDelayMs);
+            return "/tmp/mock-reader-image.jpg";
+          } finally {
+            window.clearInterval(timer);
+            if (timer != null) network?.onmessage({ phase: "end", bytes: 0 });
+            (window as any).__mockActiveReaderRequests -= 1;
+          }
         }
         case "api_local_favorite_has": {
           return false;

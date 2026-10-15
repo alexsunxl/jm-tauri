@@ -1,4 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod reader_network;
+
+use reader_network::{cancelable, ReaderNetworkReporter};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::Write as _;
@@ -4756,12 +4759,15 @@ async fn api_image_descramble(url: String, num: i64) -> Result<ImagePayload, Str
 #[tauri::command]
 async fn api_image_descramble_file(
     app: tauri::AppHandle,
+    webview: tauri::Webview,
     url: String,
     num: i64,
     aid: Option<String>,
     read_key: Option<String>,
+    on_network_progress: Option<tauri::ipc::JavaScriptChannelId>,
     registry: tauri::State<'_, CancelRegistry>,
 ) -> Result<String, String> {
+    let on_network_progress = on_network_progress.map(|id| id.channel_on(webview));
     let started = Instant::now();
     let num = if num <= 1 { 1 } else { num };
     logd!(
@@ -4817,12 +4823,17 @@ async fn api_image_descramble_file(
     }
 
     let client = http_client()?;
-    let resp = client
-        .get(&url)
-        .header("accept-encoding", "identity")
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
+    // Cache hits above emit no samples. Stop measuring before descrambling or disk writes.
+    let mut network = ReaderNetworkReporter::new(on_network_progress);
+    let mut resp = cancelable(
+        client
+            .get(&url)
+            .header("accept-encoding", "identity")
+            .send(),
+        token.as_deref(),
+    )
+    .await?
+    .map_err(|e| format!("request failed: {e}"))?;
 
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {
@@ -4848,10 +4859,18 @@ async fn api_image_descramble_file(
         return Err(format!("image http error: {status}"));
     }
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read image failed: {e}"))?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = cancelable(resp.chunk(), token.as_deref())
+        .await?
+        .map_err(|e| format!("read image failed: {e}"))?
+    {
+        if token.as_ref().is_some_and(|t| t.load(Ordering::Relaxed)) {
+            return Err("cancelled".to_string());
+        }
+        network.received(chunk.len());
+        bytes.extend_from_slice(&chunk);
+    }
+    drop(network);
 
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {

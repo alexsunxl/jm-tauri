@@ -9,6 +9,8 @@ import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import { formatChapterTitle, toNavigationId } from "../reading/navigation";
 import type { ChapterNavItem } from "../reading/navigation";
+import { ReaderLoadGovernor } from "../reading/loadGovernor";
+import type { ReaderNetworkProgress } from "../reading/loadGovernor";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
 import {
@@ -51,6 +53,8 @@ type ReadingSchedulerProps = {
   genRef: Ref<number>;
   leavingRef: Ref<boolean>;
   maxConcurrencyRef: Ref<number>;
+  loadGovernor: ReaderLoadGovernor;
+  foreground: boolean;
   requestToken: number;
   resetToken: number;
   onInflightChange: (pages: number[], count: number) => void;
@@ -137,6 +141,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
 });
 
 const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerProps) {
+  const ownerRef = useRef(makeReadKey(props.aid, "scheduler"));
   const inFlight = useRef<Set<number>>(new Set());
   const pumpScheduled = useRef<number | null>(null);
   const pumpFnRef = useRef<(() => void) | null>(null);
@@ -208,6 +213,10 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
 
   const clampRampLimit = useCallback(() => {
     const configuredMax = Math.max(1, props.maxConcurrencyRef.current);
+    if (!props.loadGovernor.isParallel) {
+      rampLimitRef.current = 1;
+      additiveCounterRef.current = 0;
+    }
     if (rampLimitRef.current > configuredMax) {
       rampLimitRef.current = configuredMax;
     }
@@ -215,10 +224,11 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       rampLimitRef.current = 1;
     }
     return configuredMax;
-  }, [props.maxConcurrencyRef]);
+  }, [props.loadGovernor, props.maxConcurrencyRef]);
 
   const increaseRampLimit = useCallback(() => {
     const configuredMax = clampRampLimit();
+    if (!props.loadGovernor.isParallel) return false;
     const prev = rampLimitRef.current;
     if (prev >= configuredMax) return false;
     const threshold = Math.min(configuredMax, 4);
@@ -234,7 +244,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       additiveCounterRef.current = 0;
     }
     return rampLimitRef.current !== prev;
-  }, [clampRampLimit]);
+  }, [clampRampLimit, props.loadGovernor]);
 
   const decreaseRampLimit = useCallback(() => {
     const configuredMax = clampRampLimit();
@@ -247,10 +257,20 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
   const pump = useCallback(async () => {
     if (props.leavingRef.current) return;
     const configuredMax = clampRampLimit();
-    const maxConcurrency = Math.max(1, Math.min(configuredMax, rampLimitRef.current));
+    const maxConcurrency = props.foreground
+      ? Math.max(1, Math.min(configuredMax, rampLimitRef.current))
+      : 1;
 
     const currentSegs = segmentNumsRef.current;
     const currentImages = imagesRef.current;
+    props.loadGovernor.setDemand(
+      ownerRef.current,
+      props.foreground,
+      currentImages.some((_, index) => {
+        const image = props.processedRef.current[index];
+        return !image?.url && !image?.error;
+      }),
+    );
     if (!currentSegs?.length || currentImages.length === 0) return;
     if (currentSegs.length !== currentImages.length) return;
     if (inFlight.current.size >= maxConcurrency) return;
@@ -274,6 +294,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       const done = props.processedRef.current[idx];
       if (done?.url || done?.error) return;
       if (inFlight.current.has(idx)) return;
+      if (startNow.includes(idx)) return;
       startNow.push(idx);
     };
     for (let i = visibleStart; i < visibleEnd && startNow.length < available; i += 1) {
@@ -288,6 +309,8 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     if (!startNow.length) return;
 
     for (const idx of startNow) {
+      const requestId = `${props.readKeyRef.current}:${gen}:${idx}`;
+      if (!props.loadGovernor.tryAcquire(requestId, props.foreground, configuredMax, performance.now())) break;
       inFlight.current.add(idx);
       emitInflight();
       (async () => {
@@ -300,12 +323,16 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
           const img = imgs[idx];
           if (!img) return;
           const num = Math.max(1, segs?.[idx] ?? 1);
-          const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+          const { invoke, convertFileSrc, Channel } = await import("@tauri-apps/api/core");
+          const onNetworkProgress = new Channel<ReaderNetworkProgress>((event) => {
+            props.loadGovernor.report(requestId, event, performance.now());
+          });
           const fileOrUrl = await invoke<string>("api_image_descramble_file", {
             url: img.url,
             num,
             aid: props.aid,
             readKey: props.readKeyRef.current,
+            onNetworkProgress,
           });
           if (props.leavingRef.current) return;
           if (gen !== props.genRef.current) return;
@@ -335,6 +362,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
           props.setProcessed((prev) => ({ ...prev, [idx]: { error: msg, retries } }));
         } finally {
           inFlight.current.delete(idx);
+          props.loadGovernor.release(requestId, performance.now());
           emitInflight();
           if (!props.leavingRef.current && gen === props.genRef.current) {
             if (needBackoff) {
@@ -353,9 +381,11 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     emitInflight,
     increaseRampLimit,
     props.aid,
+    props.foreground,
     props.currentPage,
     props.genRef,
     props.leavingRef,
+    props.loadGovernor,
     props.maxConcurrencyRef,
     props.objectUrlsByIndex,
     props.processedRef,
@@ -374,6 +404,15 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
   }, [pump]);
 
   useEffect(() => {
+    const owner = ownerRef.current;
+    const unsubscribe = props.loadGovernor.subscribe(schedulePump);
+    return () => {
+      unsubscribe();
+      props.loadGovernor.removeDemand(owner);
+    };
+  }, [props.loadGovernor, schedulePump]);
+
+  useEffect(() => {
     schedulePump();
   }, [
     schedulePump,
@@ -382,6 +421,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     props.currentPage,
     props.startPage,
     props.requestToken,
+    props.foreground,
   ]);
 
   return null;
@@ -1164,6 +1204,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
   active: boolean;
   showBoundary: boolean;
   maxConcurrencyRef: Ref<number>;
+  loadGovernor: ReaderLoadGovernor;
   showToast: (payload: { ok: boolean; text: string }) => void;
   onActivity: (activity: ReadingSegmentActivity) => void;
   onPreloadReady: (chapterId: string) => void;
@@ -1179,16 +1220,11 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
   const readKeyRef = useRef(makeReadKey(props.aid, chapterId));
   const genRef = useRef(0);
   const leavingRef = useRef(false);
-  const segmentConcurrencyRef = useRef(1);
   const { inflightPages, inflightCount, inflightSet, handleInflightChange, resetInflight } =
     useInflightTracker();
   const [pumpToken, setPumpToken] = useState(0);
   const [visibleWindow, setVisibleWindow] = useState({ start: 0, end: 0 });
   const [currentPage, setCurrentPage] = useState(1);
-
-  segmentConcurrencyRef.current = props.active
-    ? Math.max(1, props.maxConcurrencyRef.current)
-    : 1;
 
   const chapterMeta = useMemo<ChapterMeta>(
     () => ({
@@ -1319,7 +1355,9 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
         readKeyRef={readKeyRef}
         genRef={genRef}
         leavingRef={leavingRef}
-        maxConcurrencyRef={segmentConcurrencyRef}
+        maxConcurrencyRef={props.maxConcurrencyRef}
+        loadGovernor={props.loadGovernor}
+        foreground={props.active}
         requestToken={pumpToken}
         resetToken={0}
         onInflightChange={handleInflightChange}
@@ -1403,6 +1441,11 @@ export default function ReadingPage(props: {
     continuousReading,
     handleContinuousReadingChange,
   } = useReadSettingsState(props.aid);
+  const loadGovernor = useMemo(() => new ReaderLoadGovernor(), [props.aid]);
+  useEffect(() => {
+    const timer = window.setInterval(() => loadGovernor.tick(performance.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [loadGovernor]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const leavingRef = useRef(false);
   const sectionRefs = useRef(new Map<string, HTMLElement>());
@@ -1876,6 +1919,7 @@ export default function ReadingPage(props: {
               active={chapterId === activeActivity.chapterId}
               showBoundary={continuousReading}
               maxConcurrencyRef={maxConcurrencyRef}
+              loadGovernor={loadGovernor}
               showToast={showToast}
               onActivity={handleSegmentActivity}
               onPreloadReady={handlePreloadReady}
