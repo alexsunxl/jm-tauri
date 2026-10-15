@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod album_tags;
 mod reader_network;
 
 use reader_network::{cancelable, ReaderNetworkReporter};
@@ -28,6 +29,7 @@ static REGISTER_COOKIE_JAR: OnceLock<Arc<reqwest::cookie::Jar>> = OnceLock::new(
 static JM_API_BASES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static JM_API_BASE_INDEX: AtomicUsize = AtomicUsize::new(0);
 static READ_PROGRESS_DB: OnceLock<Result<sled::Db, String>> = OnceLock::new();
+static FAVORITE_TAG_SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 
 const JM_HEADER_VER: &str = "1.7.5";
 const JM_APP_VERSION: &str = "2.0.6";
@@ -262,6 +264,7 @@ struct LocalFavoriteView {
     added_at: i64,
     updated_at: i64,
     latest_chapter_sort: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3314,6 +3317,9 @@ fn api_read_offline_cache_upsert_album(
     aid: String,
     album: serde_json::Value,
 ) -> Result<(), String> {
+    if let Ok(cache) = album_tags::AlbumTagCache::open() {
+        let _ = cache.store_album(&aid, &album, now_unix_ms());
+    }
     let mut meta = load_read_offline_meta(&app, &aid)?.unwrap_or_else(|| ReadOfflineCacheMeta {
         aid: aid.trim().to_string(),
         ..ReadOfflineCacheMeta::default()
@@ -3985,6 +3991,9 @@ async fn api_album(
                 }
             }
         }
+        if let Ok(cache) = album_tags::AlbumTagCache::open() {
+            let _ = cache.store_album(&id, &album, now_unix_ms());
+        }
         return Ok(album);
     }
 
@@ -4566,6 +4575,8 @@ async fn api_local_favorites_list(
 ) -> Result<LocalFavoritesListResponse, String> {
     let tree = store.tree()?;
     let latest_tree = read_latest_tree()?;
+    let tag_cache = album_tags::AlbumTagCache::open().ok();
+    let now = now_unix_ms();
 
     let kind = kind.unwrap_or_else(|| "all".to_string());
     let kind = kind.trim();
@@ -4604,6 +4615,7 @@ async fn api_local_favorites_list(
         }
         filtered += 1;
         items.push(LocalFavoriteView {
+            tags: tag_cache.as_ref().and_then(|cache| cache.get(&it.aid, now)),
             aid: it.aid,
             title: it.title,
             author: it.author,
@@ -4619,6 +4631,54 @@ async fn api_local_favorites_list(
         filtered,
         list: items,
     })
+}
+
+#[tauri::command]
+async fn api_local_favorite_tags(
+    app: tauri::AppHandle,
+    aid: String,
+    cookies: HashMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let cache = album_tags::AlbumTagCache::open().ok();
+    if let Some(tags) = cache
+        .as_ref()
+        .and_then(|cache| cache.get(&aid, now_unix_ms()))
+    {
+        return Ok(tags);
+    }
+    let _permit = FAVORITE_TAG_SEMAPHORE
+        .get_or_init(|| tokio::sync::Semaphore::new(2))
+        .acquire()
+        .await
+        .map_err(|e| e.to_string())?;
+    // Another caller may have filled the cache while this request was queued.
+    if let Some(tags) = cache
+        .as_ref()
+        .and_then(|cache| cache.get(&aid, now_unix_ms()))
+    {
+        return Ok(tags);
+    }
+    let offline = load_read_offline_meta(&app, &aid).ok().flatten();
+    let offline_tags = offline
+        .as_ref()
+        .and_then(|meta| meta.album.as_ref())
+        .and_then(album_tags::extract_tags);
+    if let (Some(meta), Some(tags)) = (&offline, &offline_tags) {
+        if album_tags::is_fresh(meta.updated_at, now_unix_ms()) {
+            if let (Some(cache), Some(album)) = (&cache, &meta.album) {
+                let _ = cache.store_album(&aid, album, meta.updated_at);
+            }
+            return Ok(tags.clone());
+        }
+    }
+    let cached_fallback = cache.as_ref().and_then(|cache| cache.fallback(&aid));
+    match api_album(aid, cookies).await {
+        Ok(album) => album_tags::extract_tags(&album)
+            .or(offline_tags)
+            .or(cached_fallback)
+            .ok_or_else(|| "详情未提供完整标签数据".to_string()),
+        Err(error) => offline_tags.or(cached_fallback).ok_or(error),
+    }
 }
 
 #[tauri::command]
@@ -5196,6 +5256,7 @@ pub fn run() {
             api_cover_cache,
             api_search,
             api_local_favorites_list,
+            api_local_favorite_tags,
             api_local_favorites_scan_latest,
             api_local_favorites_scan_cancel,
             api_local_favorite_has,

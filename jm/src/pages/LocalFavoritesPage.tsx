@@ -8,6 +8,7 @@ import Loading from "../components/Loading";
 import { useToast } from "../components/Toast";
 import { getImgBase } from "../config/endpoints";
 import { getReadProgress } from "../reading/progress";
+import { aggregateTags, useFavoriteTags } from "../favorites/tags";
 
 type LocalFavoriteItem = {
   aid: string;
@@ -17,6 +18,7 @@ type LocalFavoriteItem = {
   addedAt: number;
   updatedAt: number;
   latestChapterSort?: string | null;
+  tags?: string[] | null;
 };
 
 type LocalFavoritesListResponse = {
@@ -97,6 +99,9 @@ export default function LocalFavoritesPage(props: {
     }
   });
   const [items, setItems] = useState<LocalFavoriteItem[]>([]);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const tagsByAid = useFavoriteTags(items, props.session.cookies);
+  const loadTokenRef = useRef(0);
   const [stats, setStats] = useState<{ total: number; filtered: number }>({
     total: 0,
     filtered: 0,
@@ -137,6 +142,7 @@ export default function LocalFavoritesPage(props: {
   const { showToast } = useToast();
 
   const load = async (kind = typeFilter) => {
+    const token = ++loadTokenRef.current;
     setError("");
     setLoading(true);
     try {
@@ -145,6 +151,7 @@ export default function LocalFavoritesPage(props: {
         "api_local_favorites_list",
         { kind },
       );
+      if (token !== loadTokenRef.current) return;
       const list = Array.isArray(res)
         ? res
         : Array.isArray(res?.list)
@@ -163,23 +170,26 @@ export default function LocalFavoritesPage(props: {
       setItems(list);
       setStats({ total, filtered });
       const follow = await invoke<FollowStateEntry[]>("api_follow_state_list");
+      if (token !== loadTokenRef.current) return;
       const set = new Set(
         Array.isArray(follow) ? follow.map((f) => String(f.aid)) : [],
       );
       setFollowSet(set);
     } catch (e) {
+      if (token !== loadTokenRef.current) return;
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       setItems([]);
       setStats({ total: 0, filtered: 0 });
       setFollowSet(new Set());
     } finally {
-      setLoading(false);
+      if (token === loadTokenRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     void load(typeFilter);
+    return () => { loadTokenRef.current += 1; };
   }, [typeFilter]);
 
   useEffect(() => {
@@ -406,9 +416,9 @@ export default function LocalFavoritesPage(props: {
     }
   };
 
-  const visible = useMemo(() => {
+  const searchedItems = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const filtered = !q
+    return !q
       ? items
       : items.filter((x) => {
           return (
@@ -417,6 +427,21 @@ export default function LocalFavoritesPage(props: {
             x.author.toLowerCase().includes(q)
           );
         });
+  }, [filter, items]);
+  const tagCounts = useMemo(() => aggregateTags(searchedItems, tagsByAid), [searchedItems, tagsByAid]);
+  const activeTag = tagCounts ? selectedTag : null;
+  useEffect(() => {
+    // A failed refresh must not leave an invisible filter with no clear button.
+    if (tagCounts == null) setSelectedTag(null);
+  }, [tagCounts]);
+  const tagOptions: Array<[string | null, number]> = [[null, searchedItems.length], ...(tagCounts ?? [])];
+  if (selectedTag && tagCounts && !tagCounts.some(([tag]) => tag === selectedTag)) {
+    tagOptions.push([selectedTag, 0]);
+  }
+  const visible = useMemo(() => {
+    const filtered = activeTag
+      ? searchedItems.filter((item) => tagsByAid.get(item.aid)?.includes(activeTag))
+      : searchedItems;
     const sorted = [...filtered].sort((a, b) => {
       if (sortMode === "addedAt") {
         if (b.addedAt !== a.addedAt) return b.addedAt - a.addedAt;
@@ -429,19 +454,19 @@ export default function LocalFavoritesPage(props: {
       return b.updatedAt - a.updatedAt;
     });
     return sorted;
-  }, [filter, items, sortMode]);
+  }, [activeTag, searchedItems, sortMode, tagsByAid]);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-600 shadow-sm">
-        收藏(本地) · 当前：{stats.filtered}
+        收藏(本地) · 当前：{visible.length}
         <span className="text-zinc-400">（总数：{stats.total}）</span>
       </div>
 
       <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
         <div className="mb-3 text-sm font-medium text-zinc-900">列表</div>
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 pb-3">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
             {(
               [
@@ -458,7 +483,7 @@ export default function LocalFavoritesPage(props: {
                   className={`h-8 rounded-sm px-3 text-sm ${
                     active ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-50"
                   }`}
-                  onClick={() => setTypeFilter(opt.key)}
+                  onClick={() => { setSelectedTag(null); setTypeFilter(opt.key); }}
                   aria-pressed={active}
                 >
                   {opt.label}
@@ -466,6 +491,35 @@ export default function LocalFavoritesPage(props: {
               );
             })}
           </div>
+        </div>
+
+        {!loading && items.length > 0 && tagCounts ? (
+          <div role="group" aria-label="标签分类" className="mt-3 flex max-h-40 flex-wrap items-center gap-2 overflow-y-auto">
+            {tagOptions.map(([tag, count]) => (
+              <button
+                key={tag == null ? "all" : `tag:${tag}`}
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  activeTag === tag ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                }`}
+                aria-pressed={activeTag === tag}
+                onClick={() => setSelectedTag(tag)}
+              >
+                {tag ?? "全部"} {count}
+              </button>
+            ))}
+            <button
+              type="button"
+              aria-label="清除标签筛选"
+              title="清除标签筛选"
+              disabled={activeTag == null}
+              onClick={() => setSelectedTag(null)}
+              className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
+            >×</button>
+          </div>
+        ) : null}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-b border-zinc-100 pb-3">
           <div className="flex h-9 shrink-0 rounded-md border border-zinc-200 bg-white p-0.5 text-sm">
             {(
               [

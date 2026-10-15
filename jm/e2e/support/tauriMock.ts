@@ -8,6 +8,7 @@ type MockFavorite = {
   addedAt: number;
   updatedAt: number;
   latestChapterSort?: string | null;
+  tags?: string[] | null;
 };
 
 type MockSearchItem = {
@@ -59,6 +60,10 @@ type MockOptions = {
   blockedReaderChapters?: string[];
   readerImageDelayMs?: number;
   readerNetworkBytesPerSecond?: number;
+  albumTags?: Record<string, unknown>;
+  cachedFavoriteTags?: Record<string, string[]>;
+  blockedTagAids?: string[];
+  failedTagAids?: string[];
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -120,6 +125,19 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const cancelledScanIds = new Set<string>();
 
     (window as any).__mockInvokeCalls = [];
+    const tagCache: Record<string, string[]> = {
+      ...(payload.cachedFavoriteTags ?? {}),
+      ...JSON.parse(localStorage.getItem("jm_mock_favorite_tags") ?? "{}"),
+    };
+    (window as any).__mockActiveTagRequests = 0;
+    (window as any).__mockPeakTagRequests = 0;
+    (window as any).__mockFailedTagAids = new Set(payload.failedTagAids ?? []);
+    (window as any).__mockAlbumTags = { ...(payload.albumTags ?? {}) };
+    const tagReleases = new Map<string, () => void>();
+    const tagGates = new Map((payload.blockedTagAids ?? []).map((id) => [
+      id, new Promise<void>((resolve) => tagReleases.set(id, resolve)),
+    ]));
+    (window as any).__mockReleaseTagFetch = (id: string) => tagReleases.get(id)?.();
     (window as any).__mockActiveReaderRequests = 0;
     (window as any).__mockPeakReaderRequests = 0;
     (window as any).__mockReaderBytesPerSecond = payload.readerNetworkBytesPerSecond ?? 0;
@@ -181,7 +199,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
       }
     };
 
-    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+    const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
       (window as any).__mockInvokeCalls.push({ cmd, args: args ?? {} });
       switch (cmd) {
         case "api_latest": {
@@ -209,8 +227,30 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
           return {
             total: favorites.length,
             filtered: list.length,
-            list,
+            list: list.map((item) => ({ ...item, tags: tagCache[item.aid] ?? item.tags ?? null })),
           };
+        }
+        case "api_local_favorite_tags": {
+          const aid = String(args?.aid);
+          if (tagCache[aid]) return tagCache[aid];
+          (window as any).__mockActiveTagRequests += 1;
+          (window as any).__mockPeakTagRequests = Math.max(
+            (window as any).__mockPeakTagRequests, (window as any).__mockActiveTagRequests,
+          );
+          try {
+            await tagGates.get(aid);
+            if ((window as any).__mockFailedTagAids.has(aid)) throw new Error("tag fetch failed");
+            const album = await invoke("api_album", { id: aid, cookies: args?.cookies });
+            const tags = (album as any)?.tags;
+            if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string")) {
+              throw new Error("详情未提供完整标签数据");
+            }
+            tagCache[aid] = [...new Set(tags.map((tag: string) => tag.trim()).filter(Boolean))];
+            localStorage.setItem("jm_mock_favorite_tags", JSON.stringify(tagCache));
+            return tagCache[aid];
+          } finally {
+            (window as any).__mockActiveTagRequests -= 1;
+          }
         }
         case "api_local_favorites_scan_latest": {
           const kind = typeof args?.kind === "string" ? args.kind : "all";
@@ -349,6 +389,8 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
             series_id: seriesId,
             name: `AID ${albumId}`,
             author: "mock",
+            tags: Object.prototype.hasOwnProperty.call((window as any).__mockAlbumTags, aid)
+              ? (window as any).__mockAlbumTags[aid] : [],
             series,
           };
         }
@@ -414,13 +456,22 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         case "api_api_base_latency":
         case "api_read_progress_export":
         case "api_read_progress_import":
-        case "api_local_favorite_toggle":
         case "plugin:opener|open_url":
         case "plugin:opener|open_path":
         case "plugin:event|unlisten": {
           const eventId = Number(args?.eventId ?? -1);
           eventListeners.delete(eventId);
           return null;
+        }
+        case "api_local_favorite_toggle": {
+          const aid = String(args?.aid);
+          const index = favorites.findIndex((item) => item.aid === aid);
+          if (index >= 0) {
+            favorites.splice(index, 1);
+            return false;
+          }
+          favorites.push({ aid, title: String(args?.title ?? ""), author: "", coverUrl: "", addedAt: Date.now(), updatedAt: Date.now() });
+          return true;
         }
         case "plugin:event|listen": {
           const event = String(args?.event ?? "");
