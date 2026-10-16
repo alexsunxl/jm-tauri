@@ -494,12 +494,12 @@ export default function LocalFavoritesPage(props: {
         </div>
 
         {!loading && items.length > 0 && tagCounts ? (
-          <div role="group" aria-label="标签分类" className="mt-3 flex max-h-40 flex-wrap items-center gap-2 overflow-y-auto">
+          <div role="group" aria-label="标签分类" className="mt-2 flex max-h-40 flex-wrap items-center gap-1.5 overflow-y-auto">
             {tagOptions.map(([tag, count]) => (
               <button
                 key={tag == null ? "all" : `tag:${tag}`}
                 type="button"
-                className={`rounded-md border px-3 py-1.5 text-sm ${
+                className={`rounded border px-2 py-0.5 text-xs leading-4 ${
                   activeTag === tag ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
                 }`}
                 aria-pressed={activeTag === tag}
@@ -514,7 +514,7 @@ export default function LocalFavoritesPage(props: {
               title="清除标签筛选"
               disabled={activeTag == null}
               onClick={() => setSelectedTag(null)}
-              className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
+              className="rounded border border-zinc-200 px-1.5 py-0.5 text-xs leading-4 text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
             >×</button>
           </div>
         ) : null}
