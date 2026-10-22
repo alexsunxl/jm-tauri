@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   HashRouter,
   Navigate,
@@ -128,19 +128,18 @@ function RequireSession(props: { session: Session | null; children: React.ReactE
 function LoginRoute(props: { session: Session | null; onLoggedIn: (s: Session) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
-  if (props.session) return <Navigate to="/home/home" replace />;
 
   const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
   const target = from || "/home/home";
 
-  return (
-    <LoginPage
-      onLoggedIn={(s) => {
-        props.onLoggedIn(s);
-        navigate(target, { replace: true });
-      }}
-    />
-  );
+  // 登录成功（或跳过登录）后由 effect 负责跳转：session 状态更新触发的渲染期
+  // <Navigate> 会在 navigate(target) 生效前抢先跳 /home/home，导致 from 丢失。
+  useEffect(() => {
+    if (!props.session) return;
+    navigate(target, { replace: true });
+  }, [navigate, props.session, target]);
+
+  return <LoginPage onLoggedIn={props.onLoggedIn} />;
 }
 
 function clearBackendSession(): void {
@@ -155,13 +154,13 @@ function clearBackendSession(): void {
 }
 
 function HomeLayout(props: {
-  session: Session;
+  session: Session | null;
   onLogout: () => void;
   onAuthExpired: () => void;
 }) {
   const location = useLocation();
   const activeSub = normalizeHomeSub(location.pathname.split("/")[2]);
-  const user = props.session.user;
+  const user = props.session?.user;
 
   return (
     <div className="safe-area-top home-mobile-safe-bottom min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6">
@@ -169,9 +168,13 @@ function HomeLayout(props: {
         <div className="hidden md:flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col">
             <div className="text-base font-semibold text-zinc-900">{homeTitle(activeSub)}</div>
-            <div className="text-sm text-zinc-600">
-              {user.username} · LV{user.level} · coin {user.coin}
-            </div>
+            {user ? (
+              <div className="text-sm text-zinc-600">
+                {user.username} · LV{user.level} · coin {user.coin}
+              </div>
+            ) : (
+              <div className="text-sm text-zinc-600">未登录 · 仅本地数据可用</div>
+            )}
           </div>
         </div>
 
@@ -179,12 +182,16 @@ function HomeLayout(props: {
           <div className="hidden md:block">
             <SideNav
               variant="sidebar"
-              user={{
-                username: user.username,
-                uid: user.uid,
-                level: user.level,
-                levelName: user.level_name,
-              }}
+              user={
+                user
+                  ? {
+                      username: user.username,
+                      uid: user.uid,
+                      level: user.level,
+                      levelName: user.level_name,
+                    }
+                  : undefined
+              }
             />
           </div>
 
@@ -192,19 +199,35 @@ function HomeLayout(props: {
             <Routes>
               <Route
                 path="home"
-                element={<HomeRoute session={props.session} onAuthExpired={props.onAuthExpired} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <HomeRoute session={props.session!} onAuthExpired={props.onAuthExpired} />
+                  </RequireSession>
+                }
               />
               <Route
                 path="favorites"
-                element={<FavoritesRoute session={props.session} onAuthExpired={props.onAuthExpired} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <FavoritesRoute session={props.session!} onAuthExpired={props.onAuthExpired} />
+                  </RequireSession>
+                }
               />
               <Route
                 path="local_favorites"
-                element={<LocalFavoritesRoute session={props.session} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <LocalFavoritesRoute session={props.session!} />
+                  </RequireSession>
+                }
               />
               <Route
                 path="category_rank"
-                element={<CategoryRankRoute session={props.session} onAuthExpired={props.onAuthExpired} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <CategoryRankRoute session={props.session!} onAuthExpired={props.onAuthExpired} />
+                  </RequireSession>
+                }
               />
               <Route
                 path="history"
@@ -212,11 +235,19 @@ function HomeLayout(props: {
               />
               <Route
                 path="search"
-                element={<SearchRoute session={props.session} onAuthExpired={props.onAuthExpired} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <SearchRoute session={props.session!} onAuthExpired={props.onAuthExpired} />
+                  </RequireSession>
+                }
               />
               <Route
                 path="settings"
-                element={<SettingsPage session={props.session} onLogout={props.onLogout} />}
+                element={
+                  <RequireSession session={props.session}>
+                    <SettingsPage session={props.session!} onLogout={props.onLogout} />
+                  </RequireSession>
+                }
               />
               <Route path="" element={<Navigate to="home" replace />} />
             </Routes>
@@ -330,7 +361,7 @@ function CategoryRankRoute(props: { session: Session; onAuthExpired: () => void 
   );
 }
 
-function HistoryRoute(props: { session: Session; onAuthExpired: () => void }) {
+function HistoryRoute(props: { session: Session | null; onAuthExpired: () => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const fromPath = `${location.pathname}${location.search}`;
@@ -596,17 +627,12 @@ function AppRoutes() {
     };
   }, [session, showToast]);
 
-  const homeLayout = useMemo(
-    () => (session ? <HomeLayout session={session} onLogout={onLogout} onAuthExpired={onAuthExpired} /> : null),
-    [onAuthExpired, onLogout, session],
-  );
-
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute session={session} onLoggedIn={onLoggedIn} />} />
       <Route
         path="/home/*"
-        element={<RequireSession session={session}>{homeLayout as React.ReactElement}</RequireSession>}
+        element={<HomeLayout session={session} onLogout={onLogout} onAuthExpired={onAuthExpired} />}
       />
       <Route
         path="/detail/:aid"
@@ -624,7 +650,7 @@ function AppRoutes() {
           </RequireSession>
         }
       />
-      <Route path="*" element={<Navigate to={session ? "/home/home" : "/login"} replace />} />
+      <Route path="*" element={<Navigate to={session ? "/home/home" : "/home/history"} replace />} />
     </Routes>
   );
 }
