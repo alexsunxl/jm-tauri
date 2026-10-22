@@ -1796,14 +1796,14 @@ export default function ReadingPage(props: {
   }, [wheelMultiplierRef]);
 
   const triggerMenu = useCallback(() => setHeaderVisible((visible) => !visible), []);
-  const showMenu = useCallback(() => setHeaderVisible(true), []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || isEditingKeyTarget(event.target)) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        showMenu();
+        // 与移动端中央点击一致：切换菜单（开/关），否则桌面端打开后无法用键盘关闭
+        triggerMenu();
         return;
       }
       if (
@@ -1841,7 +1841,7 @@ export default function ReadingPage(props: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleBack, handleOpenChapter, nextChapter, previousChapter, showMenu]);
+  }, [handleBack, handleOpenChapter, nextChapter, previousChapter, triggerMenu]);
 
   const handleRefresh = useCallback(async () => {
     const reload = reloadRefs.current.get(activeActivity.chapterId);
@@ -1854,7 +1854,7 @@ export default function ReadingPage(props: {
       className="safe-area-top min-h-screen bg-zinc-100 p-4 text-zinc-900 sm:p-6"
       loading={false}
       onRefresh={handleRefresh}
-      canPullUp={Boolean(nextChapter)}
+      canPullUp={Boolean(nextChapter) && !continuousReading}
       onPullUp={() => {
         if (nextChapter) {
           handleOpenChapter(toNavigationId(nextChapter.id), formatChapterTitle(nextChapter));

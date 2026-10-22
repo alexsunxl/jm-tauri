@@ -30,3 +30,6 @@ AGENTS.md
 doc/context.md
 doc/decisions.md
 doc/commands.md
+
+# Local AI agent context (project-internal skills / dev index)
+.claude/
