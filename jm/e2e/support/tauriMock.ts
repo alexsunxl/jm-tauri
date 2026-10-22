@@ -17,6 +17,12 @@ type MockSearchItem = {
   author: string;
 };
 
+type MockHistoryItem = {
+  id: string;
+  name: string;
+  author?: string;
+};
+
 type MockLatestItem = Record<string, unknown>;
 
 type MockAlbumChapter = {
@@ -64,6 +70,11 @@ type MockOptions = {
   cachedFavoriteTags?: Record<string, string[]>;
   blockedTagAids?: string[];
   failedTagAids?: string[];
+  noSession?: boolean;
+  guest?: boolean;
+  historyItems?: MockHistoryItem[];
+  historyTotal?: number;
+  historyError?: string;
 };
 
 export async function installTauriMock(page: Page, options: MockOptions = {}) {
@@ -108,10 +119,31 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
       },
       savedAt: Date.now(),
     };
+    const guestSession = {
+      user: {
+        uid: "guest",
+        username: "游客",
+        level_name: "",
+        level: 0,
+        coin: 0,
+        favorites: 0,
+        can_favorites: 0,
+      },
+      cookies: {},
+      savedAt: Date.now(),
+    };
+    const historyItems = Array.isArray(payload.historyItems) ? payload.historyItems : [];
+    const historyTotal =
+      typeof payload.historyTotal === "number" ? payload.historyTotal : historyItems.length;
+    const historyError = typeof payload.historyError === "string" ? payload.historyError : "";
     const fallbackCoverDataUrl =
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
-    localStorage.setItem("jm_session_v1", JSON.stringify(defaultSession));
+    if (payload.guest) {
+      localStorage.setItem("jm_session_v1", JSON.stringify(guestSession));
+    } else if (!payload.noSession) {
+      localStorage.setItem("jm_session_v1", JSON.stringify(defaultSession));
+    }
     localStorage.setItem("jm_auto_login", "0");
     localStorage.setItem("jm_auto_sign", "0");
     localStorage.setItem("jm_save_password", "0");
@@ -202,6 +234,18 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
     const invoke = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
       (window as any).__mockInvokeCalls.push({ cmd, args: args ?? {} });
       switch (cmd) {
+        case "login": {
+          const username = typeof args?.username === "string" ? args.username.trim() : "";
+          const password = typeof args?.password === "string" ? args.password : "";
+          if (!username || !password) {
+            throw new Error("请输入用户名和密码");
+          }
+          return { user: { ...defaultSession.user }, cookies: { AVS: "e2e" } };
+        }
+        case "api_history": {
+          if (historyError) throw new Error(historyError);
+          return { list: historyItems, total: historyTotal };
+        }
         case "api_latest": {
           if (latestDelayMs) await sleep(latestDelayMs);
           return {
@@ -443,6 +487,14 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         }
         case "api_local_favorite_has": {
           return false;
+        }
+        case "api_read_progress_list": {
+          return Object.entries(readProgress).map(([aid, value]) => ({
+            aid,
+            updatedAt: value.updatedAt ?? 0,
+            chapterId: value.chapterId,
+            pageIndex: value.pageIndex,
+          }));
         }
         case "api_read_progress_upsert":
         case "api_read_progress_clear":

@@ -1,6 +1,29 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { installTauriMock } from "./support/tauriMock";
+
+// 通过合成 TouchEvent 模拟"在底部上拉"手势（桌面 chromium 无真实触摸）。
+async function pullUpToNextChapter(page: Page) {
+  await page.evaluate(() => {
+    const root = document.querySelector("div.safe-area-top") as HTMLElement | null;
+    if (!root) throw new Error("reader root not found");
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const makeTouch = (y: number) =>
+      new Touch({ identifier: 1, target: root, clientX: 100, clientY: y });
+    const fire = (type: string, y: number | null) =>
+      root.dispatchEvent(
+        new TouchEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          touches: y == null ? [] : [makeTouch(y)],
+          changedTouches: y == null ? [] : [makeTouch(y)],
+        }),
+      );
+    fire("touchstart", window.innerHeight - 10);
+    fire("touchmove", window.innerHeight - 200);
+    fire("touchend", null);
+  });
+}
 
 test("home latest updates render as cards and open detail", async ({ page }) => {
   await installTauriMock(page, {
@@ -81,6 +104,12 @@ test("desktop reader shortcuts show menu and navigate back", async ({ page }) =>
   await page.keyboard.press("Escape");
   await expect(menu).toHaveClass(/opacity-100/);
 
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveClass(/opacity-0/);
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveClass(/opacity-100/);
+
   await page.keyboard.press("Backspace");
   await expect(page).toHaveURL(/\/#\/detail\/123$/);
 
@@ -112,6 +141,175 @@ test("desktop reader arrow keys navigate chapters", async ({ page }) => {
   await page.keyboard.press("ArrowLeft");
   await expect(page.getByText("正在切换到上一话 第2话：Two", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+});
+
+test("history page works without login with local records and server hint", async ({ page }) => {
+  await installTauriMock(page, {
+    noSession: true,
+    readProgress: {
+      "20001": { updatedAt: 500, chapterId: "20001", pageIndex: 3 },
+    },
+  });
+
+  await page.goto("/#/home/history");
+
+  await expect(page).toHaveURL(/\/#\/home\/history$/);
+  await expect(page.getByText("本地记录", { exact: true })).toBeVisible();
+  await expect(page.getByText("服务端记录", { exact: true })).toBeVisible();
+  await expect(page.getByText("AID 20001")).toBeVisible();
+  await expect(page.getByText(/未登录：无法查看服务端浏览记录/)).toBeVisible();
+
+  const calls = await page.evaluate(() => {
+    const mockCalls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+    return mockCalls.filter((x) => x.cmd === "api_history").length;
+  });
+  expect(calls).toBe(0);
+});
+
+test("unauthenticated users land on history instead of login", async ({ page }) => {
+  await installTauriMock(page, { noSession: true });
+
+  await page.goto("/");
+
+  await expect(page).toHaveURL(/\/#\/home\/history/);
+  await expect(page.getByText("服务端记录", { exact: true })).toBeVisible();
+});
+
+test("history page shows server records and paginates", async ({ page }) => {
+  await installTauriMock(page, {
+    historyItems: [
+      { id: "11001", name: "Server Alpha", author: "SA" },
+      { id: "11002", name: "Server Beta", author: "SB" },
+    ],
+    historyTotal: 4,
+  });
+
+  await page.goto("/#/home/history");
+
+  await expect(page.getByText("Server Alpha")).toBeVisible();
+  await expect(page.getByText("Server Beta")).toBeVisible();
+
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        return calls.filter((x) => x.cmd === "api_history").map((x) => String(x.args?.page ?? ""));
+      }),
+    )
+    .toContain("2");
+});
+
+test("history page stays on page when server session expires", async ({ page }) => {
+  await installTauriMock(page, {
+    historyError: "request failed, code=401, HTTP_STATUS=401",
+  });
+
+  await page.goto("/#/home/history");
+
+  await expect(page.getByText(/未登录：无法查看服务端浏览记录/)).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/home\/history$/);
+});
+
+test("history page skips server fetch for guest session", async ({ page }) => {
+  await installTauriMock(page, { guest: true });
+
+  await page.goto("/#/home/history");
+
+  await expect(page.getByText(/未登录：无法查看服务端浏览记录/)).toBeVisible();
+
+  const calls = await page.evaluate(() => {
+    const mockCalls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+    return mockCalls.filter((x) => x.cmd === "api_history").length;
+  });
+  expect(calls).toBe(0);
+});
+
+test("login from history hint returns to history with server records", async ({ page }) => {
+  await installTauriMock(page, {
+    noSession: true,
+    historyItems: [{ id: "12001", name: "After Login", author: "AL" }],
+  });
+
+  await page.goto("/#/home/history");
+
+  await expect(page.getByText(/未登录：无法查看服务端浏览记录/)).toBeVisible();
+  await page.getByRole("button", { name: "去登录", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/login/);
+
+  await page.locator('input[autocomplete="username"]').fill("e2e-user");
+  await page.locator('input[autocomplete="current-password"]').fill("pass123");
+  await page.getByRole("button", { name: "登录", exact: true }).last().click();
+
+  await expect(page).toHaveURL(/\/#\/home\/history$/);
+  await expect(page.getByText("After Login")).toBeVisible();
+});
+
+test("continue reading from history opens reader and records progress", async ({ page }) => {
+  await installTauriMock(page, {
+    readProgress: {
+      "30001": { updatedAt: 700, chapterId: "30001", pageIndex: 1 },
+    },
+  });
+
+  await page.goto("/#/home/history");
+
+  const continueBtn = page.getByRole("button", { name: "继续阅读", exact: true }).first();
+  await expect(continueBtn).toBeVisible();
+  await continueBtn.click();
+
+  await expect(page).toHaveURL(/\/#\/reading\/30001\/30001/);
+
+  const img = page.locator("img").first();
+  await expect(img).toBeVisible();
+
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
+        return calls.filter((x) => x.cmd === "api_read_progress_upsert").length;
+      }),
+    )
+    .toBeGreaterThan(0);
+});
+
+test("continuous reading checkbox hides pull-up to next chapter", async ({ page }) => {
+  await installTauriMock(page, {
+    readProgress: { "123": { updatedAt: 800, chapterId: "11", pageIndex: 1 } },
+    albumSeries: [
+      { id: "11", sort: 1, name: "第1话", images: ["00001.jpg"] },
+      { id: "22", sort: 2, name: "第2话", images: ["00001.jpg"] },
+      { id: "33", sort: 3, name: "第3话", images: ["00001.jpg"] },
+    ],
+  });
+
+  await page.goto("/#/home/history");
+  await page.getByRole("button", { name: "继续阅读", exact: true }).first().click();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/11/);
+  await expect(page.getByAltText("p1")).toBeVisible();
+
+  // 默认关闭：上拉手势切到第2话
+  await pullUpToNextChapter(page);
+  await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+
+  // 开启连续阅读：上拉手势被隐藏，不再切话
+  await page.keyboard.press("Escape");
+  const checkbox = page.getByLabel("连续阅读");
+  await expect(checkbox).toBeVisible();
+  await checkbox.check();
+  await expect(checkbox).toBeChecked();
+
+  await pullUpToNextChapter(page);
+  await expect(page).toHaveURL(/\/#\/reading\/123\/22/);
+
+  // 关闭后手势恢复：reload 让阅读器回到 URL 章节（连续模式下活跃段可能已移动而 URL 不变）
+  await checkbox.uncheck();
+  await expect(checkbox).not.toBeChecked();
+  await page.reload();
+  await expect(page.getByAltText("p1")).toBeVisible();
+  await pullUpToNextChapter(page);
+  await expect(page).toHaveURL(/\/#\/reading\/123\/33/);
 });
 
 test("continuous reader waits for entry images then preloads without scrolling near the end", async ({ page }) => {
