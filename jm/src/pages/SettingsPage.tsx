@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import type { Session } from "../auth/session";
 import {
@@ -466,7 +466,7 @@ export default function SettingsPage(props: { session: Session; onLogout: () => 
       });
       setUpdateDownloadProgress(100);
       showToast({ ok: true, text: `已下载：${res.path}` });
-      await openPath(res.path);
+      await invoke("app_update_open", { path: res.path });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       showToast({ ok: false, text: `更新失败：${msg}` });

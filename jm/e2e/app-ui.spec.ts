@@ -707,11 +707,11 @@ test("settings release build auto-checks update and downloads with progress", as
       return page.evaluate(() => {
         const calls = (window as any).__mockInvokeCalls as Array<{ cmd: string; args: any }>;
         const downloadCalls = calls.filter((x) => x.cmd === "app_update_download").length;
-        const openPathCalls = calls.filter((x) => x.cmd === "plugin:opener|open_path").length;
-        return { downloadCalls, openPathCalls };
+        const openCalls = calls.filter((x) => x.cmd === "app_update_open").length;
+        return { downloadCalls, openCalls };
       });
     })
-    .toEqual({ downloadCalls: 1, openPathCalls: 1 });
+    .toEqual({ downloadCalls: 1, openCalls: 1 });
 });
 
 test("local favorites multi tab can trigger latest chapter scan", async ({ page }) => {

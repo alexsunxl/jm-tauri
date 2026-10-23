@@ -28,6 +28,9 @@ static COVER_SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 static REGISTER_COOKIE_JAR: OnceLock<Arc<reqwest::cookie::Jar>> = OnceLock::new();
 static JM_API_BASES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static JM_API_BASE_INDEX: AtomicUsize = AtomicUsize::new(0);
+// Android 应用内安装 APK 的 mini 插件句柄（UpdateApkPlugin，见 gen/android .../com/aa/jm/）
+#[cfg(target_os = "android")]
+static UPDATE_PLUGIN: OnceLock<tauri::plugin::PluginHandle<tauri::Wry>> = OnceLock::new();
 static READ_PROGRESS_DB: OnceLock<Result<sled::Db, String>> = OnceLock::new();
 static FAVORITE_TAG_SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 
@@ -1572,6 +1575,38 @@ async fn app_update_download(
         path: dest.to_string_lossy().to_string(),
         name: safe_name,
     })
+}
+
+/// 打开/安装下载好的更新包。
+/// - Android：走 UpdateApkPlugin（FileProvider content:// + 授权安装 intent）
+/// - 桌面：open_path 用系统默认程序打开
+#[tauri::command]
+async fn app_update_open(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = &app;
+        let handle = UPDATE_PLUGIN
+            .get()
+            .ok_or_else(|| "update plugin not ready".to_string())?;
+        handle
+            .run_mobile_plugin::<serde_json::Value>(
+                "installApk",
+                serde_json::json!({ "path": trimmed }),
+            )
+            .map_err(|e| format!("install apk failed: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(trimmed, None::<&str>)
+            .map_err(|e| format!("open path failed: {e}"))
+    }
 }
 
 #[tauri::command]
@@ -5158,6 +5193,20 @@ pub fn run() {
         .manage(CancelRegistry::default())
         .plugin(tauri_plugin_edge_to_edge::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            // 应用内更新安装（Android 端 Kotlin 插件 UpdateApkPlugin 注册）
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("jm-updater")
+                .setup(|_app, _api| {
+                    #[cfg(target_os = "android")]
+                    {
+                        let handle = _api.register_android_plugin("com.aa.jm", "UpdateApkPlugin")?;
+                        let _ = UPDATE_PLUGIN.set(handle);
+                        logl!("[tauri][update] android install plugin registered");
+                    }
+                    Ok(())
+                })
+                .build(),
+        )
         .setup(|app| {
             if cfg!(target_os = "android") {
                 if let Ok(base) = app.path().app_data_dir() {
@@ -5218,6 +5267,7 @@ pub fn run() {
             api_session_clear,
             app_update_check,
             app_update_download,
+            app_update_open,
             api_read_progress_upsert,
             api_read_progress_clear,
             api_read_progress_list,

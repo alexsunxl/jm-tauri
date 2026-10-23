@@ -2,4 +2,7 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
   <external-path name="my_images" path="." />
   <cache-path name="my_cache_images" path="." />
+  <!-- 应用内更新包下载目录（app_update_download 的回退位置 app_data_dir/files/jm-updates） -->
+  <files-path name="jm_updates" path="jm-updates/" />
+  <external-files-path name="jm_ext_updates" path="jm-updates/" />
 </paths>

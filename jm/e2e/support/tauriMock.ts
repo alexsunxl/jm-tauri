@@ -500,6 +500,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
         case "api_read_progress_clear":
         case "api_read_cancel":
         case "api_session_clear":
+        case "app_update_open":
         case "api_read_cache_refresh":
         case "api_read_cache_cleanup":
         case "api_config_set_socks_proxy":
