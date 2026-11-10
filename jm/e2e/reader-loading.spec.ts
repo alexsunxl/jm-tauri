@@ -139,3 +139,36 @@ test("reader stays serial on a slow connection and ramps up only after recovery"
   await page.clock.runFor(5_000);
   expect(await page.evaluate(() => (window as any).__mockPeakReaderRequests)).toBe(1);
 });
+
+test("concurrent image downloads display independent ring progress and speed", async ({ page }, testInfo) => {
+  await installTauriMock(page, {
+    chapterImages: { "123": ["1.jpg", "2.jpg", "3.jpg", "4.jpg", "5.jpg"] },
+    readerImageDelayMs: 2_000,
+    readerNetworkBytesPerSecond: 768 * 1024,
+    readerImageTransfers: {
+      "4.jpg": { bytesPerSecond: 256 * 1024, totalBytes: 512 * 1024 },
+      "5.jpg": { bytesPerSecond: 96 * 1024 },
+    },
+  });
+  await page.goto("/#/detail/123");
+  await page.clock.install();
+  await page.getByRole("button", { name: "阅读", exact: true }).first().click();
+  const infoButton = page.getByRole("button", { name: /载入信息/ });
+  await infoButton.click();
+  await page.clock.runFor(6_600);
+
+  const active = page.getByRole("group", { name: "正在加载的图片" });
+  const fourth = active.getByRole("progressbar", { name: "第 4 页图片下载" });
+  const fifth = active.getByRole("progressbar", { name: "第 5 页图片下载" });
+  await expect(fourth).toHaveText("256 k/s");
+  await expect(fourth).toHaveAttribute("aria-valuenow", /^(?:[1-9]|[1-9]\d)$/);
+  await expect(fifth).toHaveText("96 k/s");
+  expect(await fifth.getAttribute("aria-valuenow")).toBeNull();
+  await expect(page.getByRole("progressbar", { name: "第 4 页图片下载" })).toHaveCount(2);
+  await active.screenshot({ path: testInfo.outputPath("per-page-download-rings.png") });
+
+  await page.clock.runFor(2_000);
+  await expect(active).toHaveCount(0);
+  await expect(page.getByAltText("p4", { exact: true })).toBeAttached();
+  await expect(page.getByAltText("p5", { exact: true })).toBeAttached();
+});

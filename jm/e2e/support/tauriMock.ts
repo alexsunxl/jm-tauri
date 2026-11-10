@@ -66,6 +66,7 @@ type MockOptions = {
   blockedReaderChapters?: string[];
   readerImageDelayMs?: number;
   readerNetworkBytesPerSecond?: number;
+  readerImageTransfers?: Record<string, { bytesPerSecond: number; totalBytes?: number }>;
   albumTags?: Record<string, unknown>;
   cachedFavoriteTags?: Record<string, string[]>;
   blockedTagAids?: string[];
@@ -469,11 +470,16 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
             (window as any).__mockPeakReaderRequests, (window as any).__mockActiveReaderRequests,
           );
           const network = args?.onNetworkProgress;
+          const fileName = String(args?.url ?? "").split("/").pop() ?? "";
+          const transfer = payload.readerImageTransfers?.[fileName];
           let timer: number | undefined;
-          if (payload.readerNetworkBytesPerSecond != null) {
+          if (payload.readerNetworkBytesPerSecond != null || transfer) {
             network?.onmessage({ phase: "start", bytes: 0 });
+            network?.onmessage({ phase: "headers", bytes: 0, totalBytes: transfer?.totalBytes });
             timer = window.setInterval(() => network?.onmessage({
-              phase: "progress", bytes: (window as any).__mockReaderBytesPerSecond / 4,
+              phase: "progress",
+              bytes: (transfer?.bytesPerSecond ?? (window as any).__mockReaderBytesPerSecond) / 4,
+              elapsedMs: 250,
             }), 250);
           }
           try {
@@ -481,7 +487,7 @@ export async function installTauriMock(page: Page, options: MockOptions = {}) {
             return "/tmp/mock-reader-image.jpg";
           } finally {
             window.clearInterval(timer);
-            if (timer != null) network?.onmessage({ phase: "end", bytes: 0 });
+            if (timer != null) network?.onmessage({ phase: "end", bytes: 0, complete: true });
             (window as any).__mockActiveReaderRequests -= 1;
           }
         }

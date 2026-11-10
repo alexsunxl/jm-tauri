@@ -4930,6 +4930,20 @@ async fn api_image_descramble_file(
     .await?
     .map_err(|e| format!("request failed: {e}"))?;
 
+    let total_bytes = resp.content_length();
+    let headers = resp.headers();
+    logd!(
+        "[tauri][imgfile] response host={:?} status={} http={:?} content_type={:?} content_length={:?} transfer_encoding={:?} content_encoding={:?} reqwest_length={:?}",
+        resp.url().host_str(),
+        resp.status().as_u16(),
+        resp.version(),
+        headers.get(reqwest::header::CONTENT_TYPE),
+        headers.get(reqwest::header::CONTENT_LENGTH),
+        headers.get(reqwest::header::TRANSFER_ENCODING),
+        headers.get(reqwest::header::CONTENT_ENCODING),
+        total_bytes,
+    );
+
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {
             logd!(
@@ -4955,6 +4969,7 @@ async fn api_image_descramble_file(
     }
 
     let mut bytes = Vec::new();
+    network.begin_body(total_bytes);
     while let Some(chunk) = cancelable(resp.chunk(), token.as_deref())
         .await?
         .map_err(|e| format!("read image failed: {e}"))?
@@ -4965,7 +4980,7 @@ async fn api_image_descramble_file(
         network.received(chunk.len());
         bytes.extend_from_slice(&chunk);
     }
-    drop(network);
+    network.finish();
 
     if let Some(t) = &token {
         if t.load(Ordering::Relaxed) {

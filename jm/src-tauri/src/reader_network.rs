@@ -5,15 +5,21 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReaderNetworkProgress {
     phase: &'static str,
     bytes: u64,
+    total_bytes: Option<u64>,
+    elapsed_ms: u64,
+    complete: bool,
 }
 
 pub(crate) struct ReaderNetworkReporter {
     channel: Option<tauri::ipc::Channel<ReaderNetworkProgress>>,
     pending_bytes: u64,
     last_report: Instant,
+    total_bytes: Option<u64>,
+    complete: bool,
 }
 
 impl ReaderNetworkReporter {
@@ -22,18 +28,35 @@ impl ReaderNetworkReporter {
             channel,
             pending_bytes: 0,
             last_report: Instant::now(),
+            total_bytes: None,
+            complete: false,
         };
-        reporter.send("start", 0);
+        reporter.send("start", 0, 0);
         reporter
     }
 
-    fn send(&self, phase: &'static str, bytes: u64) {
+    fn send(&self, phase: &'static str, bytes: u64, elapsed_ms: u64) {
         if let Some(channel) = &self.channel {
-            let _ = channel.send(ReaderNetworkProgress { phase, bytes });
+            let _ = channel.send(ReaderNetworkProgress {
+                phase,
+                bytes,
+                total_bytes: self.total_bytes,
+                elapsed_ms,
+                complete: phase == "end" && self.complete,
+            });
         }
     }
 
+    pub(crate) fn begin_body(&mut self, total_bytes: Option<u64>) {
+        self.total_bytes = total_bytes.filter(|total| *total > 0);
+        self.last_report = Instant::now();
+        self.send("headers", 0, 0);
+    }
+
     pub(crate) fn received(&mut self, bytes: usize) {
+        if self.channel.is_none() {
+            return;
+        }
         self.pending_bytes += bytes as u64;
         if self.last_report.elapsed() >= Duration::from_millis(250) {
             self.flush();
@@ -42,17 +65,22 @@ impl ReaderNetworkReporter {
 
     fn flush(&mut self) {
         if self.pending_bytes > 0 {
-            self.send("progress", self.pending_bytes);
+            let elapsed_ms = self.last_report.elapsed().as_millis().max(1) as u64;
+            self.send("progress", self.pending_bytes, elapsed_ms);
             self.pending_bytes = 0;
         }
         self.last_report = Instant::now();
+    }
+
+    pub(crate) fn finish(mut self) {
+        self.complete = true;
     }
 }
 
 impl Drop for ReaderNetworkReporter {
     fn drop(&mut self) {
         self.flush();
-        self.send("end", 0);
+        self.send("end", 0, 0);
     }
 }
 
@@ -98,12 +126,21 @@ mod tests {
         });
         {
             let mut reporter = ReaderNetworkReporter::new(Some(channel));
+            reporter.begin_body(Some(300));
             reporter.received(100);
             reporter.received(200);
+            reporter.finish();
         }
         let messages = messages.lock().unwrap();
         assert_eq!(messages.first().unwrap()["phase"], "start");
         assert_eq!(messages.last().unwrap()["phase"], "end");
+        assert_eq!(messages.last().unwrap()["complete"], true);
+        assert_eq!(messages[1]["phase"], "headers");
+        assert_eq!(messages[1]["totalBytes"], 300);
+        assert!(messages
+            .iter()
+            .filter(|message| message["phase"] == "progress")
+            .all(|message| message["elapsedMs"].as_u64().is_some_and(|ms| ms > 0)));
         let bytes: u64 = messages
             .iter()
             .filter(|message| message["phase"] == "progress")

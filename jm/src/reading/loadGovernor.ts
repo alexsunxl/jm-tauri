@@ -5,8 +5,11 @@ export const READER_NETWORK_POLICY = {
 };
 
 export type ReaderNetworkProgress = {
-  phase: "start" | "progress" | "end";
+  phase: "start" | "headers" | "progress" | "end";
   bytes: number;
+  totalBytes?: number | null;
+  elapsedMs?: number;
+  complete?: boolean;
 };
 
 /** Shared by all chapter segments so a slow connection really uses one request. */

@@ -733,7 +733,7 @@ export default function ComicDetailPage(props: {
               onClick={startOrResumeReading}
             >
               <BookOpen className="h-4 w-4" />
-              {progressChapter ? "继续阅读" : isSingle ? "开始阅读" : "从第1话开始"}
+              {progressChapter ? "继续阅读" : !album || isSingle ? "阅读" : "从第1话开始"}
             </Button>
             <button
               type="button"
@@ -933,7 +933,7 @@ export default function ComicDetailPage(props: {
                         className="inline-flex items-center rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 hover:bg-zinc-50"
                         onClick={() => openChapter(c, 1)}
                       >
-                        {formatChapterTitle(c)}
+                        {isSingle ? "阅读" : formatChapterTitle(c)}
                       </button>
                     ))
                   ) : (

@@ -469,6 +469,20 @@ test("continuous reader preloads and keeps adjacent chapters scrollable both way
   await expect(chapter33).toHaveCount(1);
 });
 
+test("single chapter detail labels both reading entries 阅读", async ({ page }) => {
+  await installTauriMock(page, {
+    albumSeries: [{ id: "123", sort: 1, name: "第1话" }],
+  });
+  await page.goto("/#/detail/123");
+  await expect(page.getByText("类型：单话")).toBeVisible();
+  const read = page.getByRole("button", { name: "阅读", exact: true });
+  await expect(read).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /第1话/ })).toHaveCount(0);
+  await read.last().click();
+  await expect(page).toHaveURL(/\/#\/reading\/123\/123/);
+  await expect(page.getByAltText("p1")).toBeVisible();
+});
+
 test("detail keeps work and chapter ids separate across reading navigation", async ({ page }) => {
   await installTauriMock(page, {
     latestItems: [{ id: "202", name: "ID Split Entry", author: "mock" }],

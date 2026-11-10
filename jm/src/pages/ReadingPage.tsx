@@ -11,6 +11,8 @@ import { formatChapterTitle, toNavigationId } from "../reading/navigation";
 import type { ChapterNavItem } from "../reading/navigation";
 import { ReaderLoadGovernor } from "../reading/loadGovernor";
 import type { ReaderNetworkProgress } from "../reading/loadGovernor";
+import PageDownloadRing from "../reading/PageDownloadRing";
+import type { PageTransfer } from "../reading/PageDownloadRing";
 import ReadingPageMenu from "./ReadingPageMenu";
 import ReadingPullContainer from "./ReadingPullContainer";
 import {
@@ -33,6 +35,7 @@ type LoadInfoStats = {
 };
 
 type ProcessedMap = Record<number, { url?: string; error?: string; retries?: number }>;
+type PageTransfers = Partial<Record<number, PageTransfer>>;
 
 type ReadImage = { raw: string; url: string; pictureName: string };
 
@@ -58,6 +61,7 @@ type ReadingSchedulerProps = {
   requestToken: number;
   resetToken: number;
   onInflightChange: (pages: number[], count: number) => void;
+  onTransferChange: (index: number, transfer?: PageTransfer) => void;
 };
 
 const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
@@ -68,14 +72,11 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   segmentReady: boolean;
   stats: LoadInfoStats | null;
   inflightPages: number[];
+  transfers: PageTransfers;
   errorCount: number;
   onRetryAllErrors: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const maxQueuedShow = 6;
-  const inflightDisplay = props.inflightPages.slice(0, maxQueuedShow).map((p) => `p${p}`);
-  const inflightTotal = props.stats?.inFlight ?? props.inflightPages.length;
-  const inflightMore = Math.max(0, inflightTotal - inflightDisplay.length);
   const loadComplete = Boolean(
     props.stats &&
       props.imagesLength > 0 &&
@@ -129,9 +130,10 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
             </button>
           ) : null}
           {props.segmentReady && props.inflightPages.length ? (
-            <div>
-              处理中：【{inflightDisplay.join(",")}
-              {inflightMore > 0 ? `…+${inflightMore}` : ""}】
+            <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="正在加载的图片">
+              {props.inflightPages.map((page) => (
+                <PageDownloadRing key={page} page={page} transfer={props.transfers[page - 1]} compact />
+              ))}
             </div>
           ) : null}
         </div>
@@ -316,6 +318,10 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
       (async () => {
         let needBackoff = false;
         let shouldRampUp = false;
+        let downloaded = 0;
+        let totalBytes: number | undefined;
+        let speedTimer: number | undefined;
+        let settled = false;
         try {
           if (props.leavingRef.current) return;
           const segs = segmentNumsRef.current;
@@ -324,8 +330,31 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
           if (!img) return;
           const num = Math.max(1, segs?.[idx] ?? 1);
           const { invoke, convertFileSrc, Channel } = await import("@tauri-apps/api/core");
+          if (props.leavingRef.current || gen !== props.genRef.current) return;
           const onNetworkProgress = new Channel<ReaderNetworkProgress>((event) => {
             props.loadGovernor.report(requestId, event, performance.now());
+            if (settled || props.leavingRef.current || gen !== props.genRef.current) return;
+            window.clearTimeout(speedTimer);
+            if (event.phase === "end") {
+              props.onTransferChange(idx, event.complete ? { percent: 100, speed: 0, processing: true } : undefined);
+              return;
+            }
+            if (event.totalBytes && Number.isFinite(event.totalBytes) && event.totalBytes > 0) {
+              totalBytes = event.totalBytes;
+            }
+            if (event.phase === "progress") downloaded += event.bytes;
+            const percent = totalBytes ? Math.min(100, (downloaded / totalBytes) * 100) : undefined;
+            const speed = event.phase === "progress" && event.elapsedMs && event.elapsedMs > 0
+              ? (event.bytes * 1000) / (event.elapsedMs * 1024)
+              : 0;
+            props.onTransferChange(idx, { percent, speed });
+            if (speed > 0) {
+              speedTimer = window.setTimeout(() => {
+                if (!settled && !props.leavingRef.current && gen === props.genRef.current) {
+                  props.onTransferChange(idx, { percent, speed: 0 });
+                }
+              }, 1200);
+            }
           });
           const fileOrUrl = await invoke<string>("api_image_descramble_file", {
             url: img.url,
@@ -361,6 +390,9 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
           };
           props.setProcessed((prev) => ({ ...prev, [idx]: { error: msg, retries } }));
         } finally {
+          settled = true;
+          window.clearTimeout(speedTimer);
+          if (!props.leavingRef.current && gen === props.genRef.current) props.onTransferChange(idx);
           inFlight.current.delete(idx);
           props.loadGovernor.release(requestId, performance.now());
           emitInflight();
@@ -388,6 +420,7 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
     props.loadGovernor,
     props.maxConcurrencyRef,
     props.objectUrlsByIndex,
+    props.onTransferChange,
     props.processedRef,
     props.readKeyRef,
     props.visibleEnd,
@@ -470,6 +503,7 @@ type ReadingImageListProps = {
   overscan: number;
   processed: ProcessedMap;
   inflightSet: Set<number>;
+  transfers: PageTransfers;
   pageIndexRef: Ref<number | null>;
   onRetry: (index: number) => void;
   onPageChange: (page: number) => void;
@@ -560,6 +594,7 @@ const ReadingImageList = memo(function ReadingImageList(props: ReadingImageListP
                 error={props.processed[idx]?.error}
                 retries={props.processed[idx]?.retries}
                 isQueued={isQueued}
+                transfer={props.transfers[idx]}
               />
             </div>
           );
@@ -652,7 +687,7 @@ function makeReadKey(aid: string, chapterId: string) {
   }
 }
 
-function ProcessedImage(props: {
+const ProcessedImage = memo(function ProcessedImage(props: {
   src: string;
   num: number;
   alt: string;
@@ -665,6 +700,7 @@ function ProcessedImage(props: {
   error?: string;
   retries?: number;
   isQueued: boolean;
+  transfer?: PageTransfer;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const containerClass = props.error
@@ -715,9 +751,10 @@ function ProcessedImage(props: {
         className={containerClass}
         style={containerStyle}
       >
-        <div className="flex h-full w-full items-center justify-between p-3 text-sm text-zinc-600">
-          <div>图片处理中…</div>
-          <div>{props.isQueued ? "队列中" : "等待进入首屏/可视区"}</div>
+        <div className="flex h-full w-full items-center justify-center p-3 text-sm text-zinc-500">
+          {props.isQueued ? `${props.alt} · 等待加载` : (
+            <PageDownloadRing page={props.index + 1} transfer={props.transfer} />
+          )}
         </div>
       </div>
     );
@@ -744,7 +781,7 @@ function ProcessedImage(props: {
       />
     </div>
   );
-}
+});
 
 function useReadSettingsState(aid: string) {
   const wheelMultiplierRef = useRef<number>(getReadWheelMultiplier());
@@ -818,6 +855,22 @@ function useReadSettingsState(aid: string) {
 function useInflightTracker() {
   const [inflightPages, setInflightPages] = useState<number[]>([]);
   const [inflightCount, setInflightCount] = useState(0);
+  const [transfers, setTransfers] = useState<PageTransfers>({});
+
+  const handleTransferChange = useCallback((index: number, transfer?: PageTransfer) => {
+    setTransfers((prev) => {
+      const current = prev[index];
+      if (!transfer) {
+        if (!current) return prev;
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      }
+      if (current && current.percent === transfer.percent && current.speed === transfer.speed &&
+          current.processing === transfer.processing) return prev;
+      return { ...prev, [index]: transfer };
+    });
+  }, []);
 
   const handleInflightChange = useCallback((pages: number[], count: number) => {
     setInflightCount((prev) => (prev === count ? prev : count));
@@ -834,9 +887,10 @@ function useInflightTracker() {
   const resetInflight = useCallback(() => {
     setInflightCount(0);
     setInflightPages([]);
+    setTransfers({});
   }, []);
 
-  return { inflightPages, inflightCount, inflightSet, handleInflightChange, resetInflight };
+  return { inflightPages, inflightCount, inflightSet, transfers, handleInflightChange, handleTransferChange, resetInflight };
 }
 
 function useLoadInfoStats(
@@ -1220,8 +1274,9 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
   const readKeyRef = useRef(makeReadKey(props.aid, chapterId));
   const genRef = useRef(0);
   const leavingRef = useRef(false);
-  const { inflightPages, inflightCount, inflightSet, handleInflightChange, resetInflight } =
-    useInflightTracker();
+  const {
+    inflightPages, inflightCount, inflightSet, transfers, handleInflightChange, handleTransferChange, resetInflight,
+  } = useInflightTracker();
   const [pumpToken, setPumpToken] = useState(0);
   const [visibleWindow, setVisibleWindow] = useState({ start: 0, end: 0 });
   const [currentPage, setCurrentPage] = useState(1);
@@ -1361,6 +1416,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
         requestToken={pumpToken}
         resetToken={0}
         onInflightChange={handleInflightChange}
+        onTransferChange={handleTransferChange}
       />
 
       {loading ? (
@@ -1384,6 +1440,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
           segmentReady={Boolean(segmentNums)}
           stats={loadInfoStats}
           inflightPages={inflightPages}
+          transfers={transfers}
           errorCount={errorCount}
           onRetryAllErrors={handleRetryAllErrors}
         />
@@ -1404,6 +1461,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
         overscan={12}
         processed={processed}
         inflightSet={inflightSet}
+        transfers={transfers}
         pageIndexRef={pageIndexRef}
         onRetry={onRetry}
         onPageChange={setCurrentPage}
