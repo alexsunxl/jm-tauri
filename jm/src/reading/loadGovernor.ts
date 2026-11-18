@@ -12,6 +12,15 @@ export type ReaderNetworkProgress = {
   complete?: boolean;
 };
 
+export const READER_TRANSFER_SPEED_STALE_MS = 1_200;
+const READER_DOWNLOAD_SPEED_WINDOW_MS = 750;
+
+export function getReaderTransferSpeed(event: ReaderNetworkProgress) {
+  return event.phase === "progress" && event.elapsedMs && event.elapsedMs > 0
+    ? (event.bytes * 1000) / (event.elapsedMs * 1024)
+    : 0;
+}
+
 /** Shared by all chapter segments so a slow connection really uses one request. */
 export class ReaderLoadGovernor {
   private parallel = false;
@@ -20,6 +29,7 @@ export class ReaderLoadGovernor {
   private demands = new Map<string, { foreground: boolean; pending: boolean }>();
   private listeners = new Set<() => void>();
   private samples: Array<{ at: number; bytes: number }> = [];
+  private downloadSamples: Array<{ at: number; bytes: number }> = [];
   private busyIntervals: Array<{ start: number; end: number }> = [];
   private observedSince: number | null = null;
   private lastAt: number | null = null;
@@ -27,6 +37,15 @@ export class ReaderLoadGovernor {
 
   get isParallel() {
     return this.parallel;
+  }
+
+  getDownloadSpeed(now: number) {
+    const cutoff = now - READER_DOWNLOAD_SPEED_WINDOW_MS;
+    let bytes = 0;
+    for (const sample of this.downloadSamples) {
+      if (sample.at > cutoff && sample.at <= now) bytes += sample.bytes;
+    }
+    return (bytes * 1000) / (READER_DOWNLOAD_SPEED_WINDOW_MS * 1024);
   }
 
   subscribe(listener: () => void) {
@@ -76,7 +95,10 @@ export class ReaderLoadGovernor {
       this.transfers.add(id);
     } else if (this.transfers.has(id)) {
       if (event.phase === "progress" && Number.isFinite(event.bytes) && event.bytes > 0) {
-        this.samples.push({ at: now, bytes: event.bytes });
+        const sample = { at: now, bytes: event.bytes };
+        this.samples.push(sample);
+        this.downloadSamples = this.downloadSamples.filter(({ at }) => at > now - READER_DOWNLOAD_SPEED_WINDOW_MS);
+        this.downloadSamples.push(sample);
       }
       this.evaluate(now);
       if (event.phase === "end") this.transfers.delete(id);

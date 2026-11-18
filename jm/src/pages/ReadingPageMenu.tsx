@@ -95,7 +95,7 @@ export default function ReadingPageMenu(props: ReadingPageMenuProps) {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-col">
               <div className="text-base font-semibold text-zinc-900">阅读</div>
-              <div className="text-sm text-zinc-600">{props.chapterTitle}</div>
+              {props.chapterTitle ? <div className="text-sm text-zinc-600">{props.chapterTitle}</div> : null}
             </div>
             <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
               <button

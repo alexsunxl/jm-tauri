@@ -13,6 +13,24 @@ function startTransfer(governor: ReaderLoadGovernor, at = 0) {
   governor.report("image", { phase: "start", bytes: 0 }, at);
 }
 
+test("display speed counts short transfers after completion and expires each sample", () => {
+  const governor = new ReaderLoadGovernor();
+  startTransfer(governor);
+  governor.report("image", { phase: "progress", bytes: 75 * 1024, elapsedMs: 100 }, 100);
+  governor.report("image", { phase: "end", bytes: 0 }, 100);
+  governor.release("image", 100);
+  expect(governor.getDownloadSpeed(150)).toBe(100);
+
+  startTransfer(governor, 200);
+  governor.report("image", { phase: "progress", bytes: 150 * 1024, elapsedMs: 100 }, 300);
+  governor.release("image", 300);
+  expect(governor.getDownloadSpeed(450)).toBe(300);
+  expect(governor.getDownloadSpeed(849)).toBe(300);
+  expect(governor.getDownloadSpeed(850)).toBe(200);
+  expect(governor.getDownloadSpeed(1050)).toBe(0);
+  expect(governor.isParallel).toBe(false);
+});
+
 test("loading uses two speed thresholds and a fresh window before recovering", () => {
   const governor = new ReaderLoadGovernor();
   startTransfer(governor);
@@ -22,6 +40,7 @@ test("loading uses two speed thresholds and a fresh window before recovering", (
   expect(governor.isParallel).toBe(false);
   transferWindow(governor, 10_000, 512 * 1024);
   expect(governor.isParallel).toBe(true);
+  expect(governor.getDownloadSpeed(15_000)).toBe(512);
   transferWindow(governor, 15_000, 256 * 1024);
   expect(governor.isParallel).toBe(true);
   transferWindow(governor, 20_000, 64 * 1024);
@@ -80,6 +99,7 @@ test("cancellation releases the shared slot and late telemetry cannot change the
   governor.report("image", { phase: "progress", bytes: 100 * 1024 * 1024 }, 5_100);
   governor.tick(5_100);
   expect(governor.isParallel).toBe(false);
+  expect(governor.getDownloadSpeed(5_100)).toBe(0);
   expect(governor.tryAcquire("second", true, 4, 5_100)).toBe(false);
 });
 
@@ -140,6 +160,27 @@ test("reader stays serial on a slow connection and ramps up only after recovery"
   expect(await page.evaluate(() => (window as any).__mockPeakReaderRequests)).toBe(1);
 });
 
+test("reader displays the speed of an image that completes between UI refreshes", async ({ page }) => {
+  await installTauriMock(page, {
+    chapterImages: { "123": ["1.jpg"] },
+    readerImageDelayMs: 100,
+    readerNetworkBytesPerSecond: 750 * 1024,
+  });
+  await page.goto("/#/detail/123");
+  await page.clock.install();
+  await page.getByRole("button", { name: "阅读", exact: true }).first().click();
+  await page.getByRole("button", { name: /载入信息/ }).waitFor();
+  await page.clock.runFor(250);
+
+  const completed = page.getByRole("button", { name: /加载完成/ });
+  const speed = completed.getByTitle("总下载速度");
+  await expect(speed).toHaveText("100 k/s");
+
+  await page.clock.runFor(900);
+  await expect(completed).toBeVisible();
+  await expect(speed).toHaveCount(0);
+});
+
 test("concurrent image downloads display independent ring progress and speed", async ({ page }, testInfo) => {
   await installTauriMock(page, {
     chapterImages: { "123": ["1.jpg", "2.jpg", "3.jpg", "4.jpg", "5.jpg"] },
@@ -155,7 +196,7 @@ test("concurrent image downloads display independent ring progress and speed", a
   await page.getByRole("button", { name: "阅读", exact: true }).first().click();
   const infoButton = page.getByRole("button", { name: /载入信息/ });
   await infoButton.click();
-  await page.clock.runFor(6_600);
+  await page.clock.runFor(7_200);
 
   const active = page.getByRole("group", { name: "正在加载的图片" });
   const fourth = active.getByRole("progressbar", { name: "第 4 页图片下载" });
@@ -164,11 +205,13 @@ test("concurrent image downloads display independent ring progress and speed", a
   await expect(fourth).toHaveAttribute("aria-valuenow", /^(?:[1-9]|[1-9]\d)$/);
   await expect(fifth).toHaveText("96 k/s");
   expect(await fifth.getAttribute("aria-valuenow")).toBeNull();
+  await expect(infoButton.getByTitle("总下载速度")).toHaveText("352 k/s");
   await expect(page.getByRole("progressbar", { name: "第 4 页图片下载" })).toHaveCount(2);
   await active.screenshot({ path: testInfo.outputPath("per-page-download-rings.png") });
 
   await page.clock.runFor(2_000);
   await expect(active).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /加载完成/ }).getByTitle("总下载速度")).toHaveCount(0);
   await expect(page.getByAltText("p4", { exact: true })).toBeAttached();
   await expect(page.getByAltText("p5", { exact: true })).toBeAttached();
 });

@@ -404,6 +404,7 @@ test("continuous reader preloads and keeps adjacent chapters scrollable both way
   const chapter33 = page.locator('[data-reading-chapter="33"]');
   await expect(chapter11).toHaveCount(1);
   await expect(chapter22).toHaveCount(1);
+  await expect(chapter11.getByText("第1话：One", { exact: true })).toBeVisible();
   await expect(chapter11.getByAltText("p1")).toBeVisible();
   await expect(chapter22.getByAltText("p1")).toHaveCount(1);
   await expect
@@ -469,8 +470,9 @@ test("continuous reader preloads and keeps adjacent chapters scrollable both way
   await expect(chapter33).toHaveCount(1);
 });
 
-test("single chapter detail labels both reading entries 阅读", async ({ page }) => {
+test("single chapter uses 阅读 on detail and hides the chapter title in the reader", async ({ page }) => {
   await installTauriMock(page, {
+    continuousReading: true,
     albumSeries: [{ id: "123", sort: 1, name: "第1话" }],
   });
   await page.goto("/#/detail/123");
@@ -481,6 +483,9 @@ test("single chapter detail labels both reading entries 阅读", async ({ page }
   await read.last().click();
   await expect(page).toHaveURL(/\/#\/reading\/123\/123/);
   await expect(page.getByAltText("p1")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "返回详情" })).toBeVisible();
+  await expect(page.getByText(/第1话/)).toHaveCount(0);
 });
 
 test("detail keeps work and chapter ids separate across reading navigation", async ({ page }) => {

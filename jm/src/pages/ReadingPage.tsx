@@ -9,7 +9,7 @@ import { upsertReadProgress } from "../reading/progress";
 import type { ReadProgress } from "../reading/progress";
 import { formatChapterTitle, toNavigationId } from "../reading/navigation";
 import type { ChapterNavItem } from "../reading/navigation";
-import { ReaderLoadGovernor } from "../reading/loadGovernor";
+import { getReaderTransferSpeed, ReaderLoadGovernor, READER_TRANSFER_SPEED_STALE_MS } from "../reading/loadGovernor";
 import type { ReaderNetworkProgress } from "../reading/loadGovernor";
 import PageDownloadRing from "../reading/PageDownloadRing";
 import type { PageTransfer } from "../reading/PageDownloadRing";
@@ -71,6 +71,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
   scrambleError: string;
   segmentReady: boolean;
   stats: LoadInfoStats | null;
+  loadGovernor: ReaderLoadGovernor;
   inflightPages: number[];
   transfers: PageTransfers;
   errorCount: number;
@@ -99,6 +100,7 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
       >
         <Info className={`h-3.5 w-3.5 ${infoTone}`} />
         {loadComplete ? "加载完成" : "载入信息"}
+        <ReadingDownloadSpeed loadGovernor={props.loadGovernor} showWhenIdle={!loadComplete} />
         {props.errorCount > 0 ? (
           <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-500/90 px-2 py-0.5 text-[10px] font-semibold text-white">
             <AlertTriangle className="h-3 w-3" />
@@ -140,6 +142,23 @@ const ReadingLoadInfo = memo(function ReadingLoadInfo(props: {
       ) : null}
     </div>
   );
+});
+
+const ReadingDownloadSpeed = memo(function ReadingDownloadSpeed(props: {
+  loadGovernor: ReaderLoadGovernor;
+  showWhenIdle: boolean;
+}) {
+  const { loadGovernor, showWhenIdle } = props;
+  const [speed, setSpeed] = useState(() => Math.round(loadGovernor.getDownloadSpeed(performance.now())));
+  useEffect(() => {
+    const update = () => setSpeed(Math.round(loadGovernor.getDownloadSpeed(performance.now())));
+    update();
+    const timer = window.setInterval(update, 150);
+    return () => window.clearInterval(timer);
+  }, [loadGovernor]);
+  return showWhenIdle || speed > 0 ? (
+    <span className="ml-2 whitespace-nowrap tabular-nums" title="总下载速度">{speed} k/s</span>
+  ) : null;
 });
 
 const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerProps) {
@@ -344,16 +363,14 @@ const ReadingScheduler = memo(function ReadingScheduler(props: ReadingSchedulerP
             }
             if (event.phase === "progress") downloaded += event.bytes;
             const percent = totalBytes ? Math.min(100, (downloaded / totalBytes) * 100) : undefined;
-            const speed = event.phase === "progress" && event.elapsedMs && event.elapsedMs > 0
-              ? (event.bytes * 1000) / (event.elapsedMs * 1024)
-              : 0;
+            const speed = getReaderTransferSpeed(event);
             props.onTransferChange(idx, { percent, speed });
             if (speed > 0) {
               speedTimer = window.setTimeout(() => {
                 if (!settled && !props.leavingRef.current && gen === props.genRef.current) {
                   props.onTransferChange(idx, { percent, speed: 0 });
                 }
-              }, 1200);
+              }, READER_TRANSFER_SPEED_STALE_MS);
             }
           });
           const fileOrUrl = await invoke<string>("api_image_descramble_file", {
@@ -1439,6 +1456,7 @@ const ReadingChapterSegment = memo(function ReadingChapterSegment(props: {
           scrambleError={scrambleError}
           segmentReady={Boolean(segmentNums)}
           stats={loadInfoStats}
+          loadGovernor={props.loadGovernor}
           inflightPages={inflightPages}
           transfers={transfers}
           errorCount={errorCount}
@@ -1531,6 +1549,7 @@ export default function ReadingPage(props: {
     }
     return list;
   }, [props.chapterId, props.chapterTitle, props.chapters]);
+  const hasMultipleChapters = sortedChapters.length > 1;
 
   const chapterSignature = useMemo(
     () => sortedChapters.map((chapter) => toNavigationId(chapter.id)).join("\u0000"),
@@ -1935,7 +1954,7 @@ export default function ReadingPage(props: {
       <div className="mx-auto flex w-full min-w-0 max-w-[900px] flex-col gap-4">
         <ReadingPageMenu
           visible={headerVisible}
-          chapterTitle={activeActivity.chapterTitle}
+          chapterTitle={hasMultipleChapters ? activeActivity.chapterTitle : ""}
           chapters={sortedChapters}
           chapterId={activeActivity.chapterId}
           onOpenChapter={handleOpenChapter}
@@ -1975,7 +1994,7 @@ export default function ReadingPage(props: {
               coverUrl={coverUrl}
               effectiveScale={effectiveScale}
               active={chapterId === activeActivity.chapterId}
-              showBoundary={continuousReading}
+              showBoundary={continuousReading && hasMultipleChapters}
               maxConcurrencyRef={maxConcurrencyRef}
               loadGovernor={loadGovernor}
               showToast={showToast}
